@@ -19,8 +19,20 @@ test("bundle avoids unsupported Hermes logical-assignment syntax", () => {
   assert.doesNotMatch(source, /\|\|=|&&=|\?\?=/);
 });
 
+test("versioned manifest hash matches its ES2018 bundle", () => {
+  const root = path.join(__dirname, "..", "v2");
+  const source = fs.readFileSync(path.join(root, "index.js"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const hash = crypto.createHash("sha256").update(source).digest("hex");
+
+  assert.equal(manifest.hash, hash);
+});
+
 function createHarness(channelType = 1, options = {}) {
-  const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  const source = fs.readFileSync(
+    path.join(__dirname, options.sourcePath || "../index.js"),
+    "utf8",
+  );
   const calls = { command: [], original: [], toast: [] };
   const scheduled = [];
   const storage = {};
@@ -177,4 +189,11 @@ test("shows startup failures in diagnostics without disabling itself", () => {
   assert.equal(harness.storage.diagnosticStatus, "Startup error");
   assert.match(harness.storage.diagnosticError, /patch failed/);
   assert.equal(harness.calls.toast.length, 1);
+});
+
+test("versioned ES2018 bundle returns a loadable plugin through ShiggyCord", () => {
+  const harness = createHarness(1, { sourcePath: "../v2/index.js" });
+
+  assert.equal(harness.storage.diagnosticStatus, "Ready");
+  assert.equal(typeof harness.plugin.settings, "function");
 });
