@@ -28,6 +28,15 @@ test("versioned manifest hash matches its ES2018 bundle", () => {
   assert.equal(manifest.hash, hash);
 });
 
+test("v3 manifest hash matches its direct-return bundle", () => {
+  const root = path.join(__dirname, "..", "v3");
+  const source = fs.readFileSync(path.join(root, "index.js"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const hash = crypto.createHash("sha256").update(source).digest("hex");
+
+  assert.equal(manifest.hash, hash);
+});
+
 function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(
     path.join(__dirname, options.sourcePath || "../index.js"),
@@ -112,7 +121,7 @@ function createHarness(channelType = 1, options = {}) {
     context,
   );
   const pluginModule = evaluatePlugin(vendetta);
-  const plugin = pluginModule.default;
+  const plugin = pluginModule.default || pluginModule;
   plugin.onLoad();
 
   async function send(message) {
@@ -196,4 +205,22 @@ test("versioned ES2018 bundle returns a loadable plugin through ShiggyCord", () 
 
   assert.equal(harness.storage.diagnosticStatus, "Ready");
   assert.equal(typeof harness.plugin.settings, "function");
+});
+
+test("direct-return v3 bundle evaluates without touching host APIs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v3/index.js"), "utf8");
+  const accesses = [];
+  const untouchedHost = new Proxy({}, {
+    get(_target, property) {
+      accesses.push(String(property));
+      throw new Error(`Host API accessed during evaluation: ${String(property)}`);
+    },
+  });
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+  )(untouchedHost);
+
+  assert.deepEqual(accesses, []);
+  assert.equal(typeof plugin.onLoad, "function");
+  assert.equal(typeof plugin.settings, "function");
 });
