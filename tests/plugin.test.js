@@ -87,14 +87,19 @@ function createHarness(channelType = 1, options = {}) {
     logger: { log() {}, error() {} },
   };
 
-  const pluginModule = vm.runInNewContext(source, {
+  const context = {
     vendetta,
     setTimeout(callback) {
       scheduled.push(callback);
       return scheduled.length;
     },
     clearTimeout() {},
-  });
+  };
+  const evaluatePlugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+    context,
+  );
+  const pluginModule = evaluatePlugin(vendetta);
   const plugin = pluginModule.default;
   plugin.onLoad();
 
