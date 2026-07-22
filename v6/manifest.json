@@ -1,0 +1,14 @@
+{
+  "name": "PluralAuto",
+  "description": "Version 6.0.0 • Full automatic /plu/ral userproxy controls for DMs.",
+  "authors": [
+    {
+      "name": "Brigitte"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_commands"
+  },
+  "hash": "20e8db16d13de6025bedc7242daf681e46046d4bb6366854346a91a231fadc8f"
+}
