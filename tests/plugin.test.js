@@ -37,6 +37,36 @@ test("v3 manifest hash matches its direct-return bundle", () => {
   assert.equal(manifest.hash, hash);
 });
 
+test("v5 manifest hash matches its compatibility bundle", () => {
+  const root = path.join(__dirname, "..", "v5");
+  const source = fs.readFileSync(path.join(root, "index.js"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const hash = crypto.createHash("sha256").update(source).digest("hex");
+
+  assert.equal(manifest.hash, hash);
+});
+
+test("v5 uses the syntax level proven by the v4 loader test", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v5/index.js"), "utf8");
+
+  assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
+});
+
+test("v6 manifest hash matches its full-feature compatibility bundle", () => {
+  const root = path.join(__dirname, "..", "v6");
+  const source = fs.readFileSync(path.join(root, "index.js"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const hash = crypto.createHash("sha256").update(source).digest("hex");
+
+  assert.equal(manifest.hash, hash);
+});
+
+test("v6 retains the syntax level proven by the v4 loader test", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v6/index.js"), "utf8");
+
+  assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
+});
+
 function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(
     path.join(__dirname, options.sourcePath || "../index.js"),
@@ -223,4 +253,245 @@ test("direct-return v3 bundle evaluates without touching host APIs", () => {
   assert.deepEqual(accesses, []);
   assert.equal(typeof plugin.onLoad, "function");
   assert.equal(typeof plugin.settings, "function");
+});
+
+function createV5Harness(channelType = 1, options = {}) {
+  const source = fs.readFileSync(
+    path.join(__dirname, options.sourcePath || "../v5/index.js"),
+    "utf8",
+  );
+  const storage = options.storage || {};
+  const calls = { executor: [], original: [], toast: [] };
+  const channel = { id: "dm-modern", type: channelType, name: "Modern DM" };
+  const command = {
+    id: "command-modern",
+    applicationId: "application-modern",
+    name: options.commandName || "proxy",
+    untranslatedName: options.commandName || "proxy",
+    type: 1,
+    version: "1",
+    options: [{ name: options.optionName || "message", type: 3 }],
+  };
+  const MessageActions = { sendMessage() {} };
+  let insteadCallback;
+
+  function modernExecutor(payload) {
+    "APPLICATION_COMMAND_USED";
+    "optionValues";
+    calls.executor.push(payload);
+  }
+
+  const vendetta = {
+    plugin: { storage },
+    patcher: {
+      instead(_name, _module, callback) {
+        if (options.patchThrows) throw new Error("v5 patch failed");
+        insteadCallback = callback;
+        return () => {};
+      },
+    },
+    metro: {
+      common: {
+        React: {
+          createElement(type, props, ...children) {
+            return { type, props: props || {}, children };
+          },
+          useState: () => [0, () => {}],
+        },
+        ReactNative: {
+          View() {}, Text() {}, TextInput() {}, Pressable() {}, ScrollView() {}, Switch() {},
+        },
+      },
+      findByStoreName(name) {
+        if (name === "ChannelStore") return { getChannel: () => channel };
+        if (name === "SelectedChannelStore") return { getChannelId: () => channel.id };
+        if (name === "ApplicationCommandIndexStore") {
+          return {
+            query() {
+              return {
+                loading: false,
+                commands: options.commandAvailable === false ? [] : [command],
+              };
+            },
+          };
+        }
+      },
+      findByProps(...props) {
+        if (props.includes("sendMessage")) return MessageActions;
+      },
+      findByName() {},
+      find(filter) {
+        const exports = { A: modernExecutor };
+        return filter(exports) ? exports : undefined;
+      },
+    },
+    ui: { toasts: { showToast(message) { calls.toast.push(message); } } },
+    logger: { error() {} },
+  };
+  const context = {
+    vendetta,
+    setTimeout(callback) { callback(); return 1; },
+    clearTimeout() {},
+    Promise,
+  };
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+    context,
+  )(vendetta);
+  plugin.onLoad();
+
+  async function send(message) {
+    return insteadCallback(
+      [channel.id, message],
+      (...args) => {
+        calls.original.push(args);
+        return { original: true };
+      },
+    );
+  }
+
+  return { calls, command, plugin, send, storage };
+}
+
+test("v5 evaluates without touching ShiggyCord APIs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v5/index.js"), "utf8");
+  const accesses = [];
+  const untouchedHost = new Proxy({}, {
+    get(_target, property) {
+      accesses.push(String(property));
+      throw new Error(`Host API accessed during evaluation: ${String(property)}`);
+    },
+  });
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+  )(untouchedHost);
+
+  assert.deepEqual(accesses, []);
+  assert.equal(typeof plugin.onLoad, "function");
+  assert.equal(typeof plugin.onUnload, "function");
+  assert.equal(typeof plugin.settings, "function");
+});
+
+test("v5 queues ordinary DM text through Discord's application-command executor", async () => {
+  const harness = createV5Harness();
+  const result = await harness.send({ content: "hello", attachments: [], stickerIds: [] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 1);
+  assert.equal(harness.calls.executor[0].command.name, "proxy");
+  assert.equal(
+    JSON.stringify(harness.calls.executor[0].optionValues.message),
+    JSON.stringify([{ type: "text", text: "hello" }]),
+  );
+  assert.equal(harness.calls.original.length, 0);
+  assert.equal(harness.storage.status, "Working");
+});
+
+test("v5 bypasses non-DM messages", async () => {
+  const harness = createV5Harness(0);
+  const result = await harness.send({ content: "hello", attachments: [] });
+
+  assert.equal(result.original, true);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.calls.original.length, 1);
+});
+
+test("v5 keeps onLoad errors inside diagnostics", () => {
+  const harness = createV5Harness(1, { patchThrows: true });
+
+  assert.equal(typeof harness.plugin.settings, "function");
+  assert.equal(harness.storage.status, "Startup error");
+  assert.match(harness.storage.lastError, /v5 patch failed/);
+});
+
+test("v6 evaluates without touching ShiggyCord APIs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v6/index.js"), "utf8");
+  const accesses = [];
+  const untouchedHost = new Proxy({}, {
+    get(_target, property) {
+      accesses.push(String(property));
+      throw new Error(`Host API accessed during evaluation: ${String(property)}`);
+    },
+  });
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+  )(untouchedHost);
+
+  assert.deepEqual(accesses, []);
+  assert.equal(typeof plugin.onLoad, "function");
+  assert.equal(typeof plugin.onUnload, "function");
+  assert.equal(typeof plugin.settings, "function");
+});
+
+test("v6 uses the selected per-DM proxy and its own message option", async () => {
+  const storage = {
+    commandLines: "Alice | alice | message\nBob | bob | text",
+    defaultCommand: "alice",
+    channelCommands: { "dm-modern": "bob" },
+    disabledChannels: {},
+  };
+  const harness = createV5Harness(1, {
+    sourcePath: "../v6/index.js",
+    storage,
+    commandName: "bob",
+    optionName: "text",
+  });
+  const result = await harness.send({ content: "hello from Bob", attachments: [] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 1);
+  assert.equal(harness.calls.executor[0].command.name, "bob");
+  assert.equal(
+    JSON.stringify(harness.calls.executor[0].optionValues.text),
+    JSON.stringify([{ type: "text", text: "hello from Bob" }]),
+  );
+  assert.equal(harness.calls.original.length, 0);
+});
+
+test("v6 supports explicitly disabling one DM", async () => {
+  const storage = {
+    commandLines: "Alice | alice | message",
+    defaultCommand: "alice",
+    channelCommands: {},
+    disabledChannels: { "dm-modern": true },
+  };
+  const harness = createV5Harness(1, {
+    sourcePath: "../v6/index.js",
+    storage,
+    commandName: "alice",
+  });
+  const result = await harness.send({ content: "send normally", attachments: [] });
+
+  assert.equal(result.original, true);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.calls.original.length, 1);
+});
+
+test("v6 remains fail-closed when a configured command is missing", async () => {
+  const storage = {
+    commandLines: "Alice | alice | message",
+    defaultCommand: "alice",
+    channelCommands: {},
+    disabledChannels: {},
+  };
+  const harness = createV5Harness(1, {
+    sourcePath: "../v6/index.js",
+    storage,
+    commandAvailable: false,
+  });
+  const result = await harness.send({ content: "do not leak", attachments: [] });
+
+  assert.equal(result.ok, false);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.calls.original.length, 0);
+  assert.equal(harness.storage.status, "Message blocked");
+});
+
+test("v6 renders the restored settings screen", () => {
+  const harness = createV5Harness(1, { sourcePath: "../v6/index.js" });
+  const tree = harness.plugin.settings();
+
+  assert.ok(tree);
+  assert.equal(harness.storage.version, "6.0.0");
+  assert.match(harness.storage.commandLines, /Default proxy \| proxy \| message/);
 });
