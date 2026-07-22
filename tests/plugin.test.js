@@ -16,7 +16,7 @@ test("manifest hash matches the published plugin bundle", () => {
 
 function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
-  const calls = { command: [], original: [] };
+  const calls = { command: [], original: [], toast: [] };
   const scheduled = [];
   const storage = {};
   const channel = { id: "dm-1", type: channelType, name: "Test DM" };
@@ -36,6 +36,7 @@ function createHarness(channelType = 1, options = {}) {
     plugin: { storage },
     patcher: {
       instead(_name, _module, callback) {
+        if (options.patchThrows) throw new Error("patch failed");
         insteadCallback = callback;
         return () => {};
       },
@@ -72,7 +73,11 @@ function createHarness(channelType = 1, options = {}) {
     storage: { useProxy() {} },
     ui: {
       assets: { getAssetIDByName: () => 1 },
-      toasts: { showToast() {} },
+      toasts: {
+        showToast(message) {
+          calls.toast.push(message);
+        },
+      },
     },
     logger: { log() {}, error() {} },
   };
@@ -143,6 +148,7 @@ test("settings are initialized in the plugin's persistent storage", () => {
   assert.equal(harness.storage.enabled, true);
   assert.equal(harness.storage.defaultCommand, "proxy");
   assert.equal(harness.storage.sendNormallyOnError, false);
+  assert.equal(harness.storage.diagnosticStatus, "Ready");
   assert.deepEqual(Object.keys(harness.storage.channelCommands), []);
 });
 
@@ -151,4 +157,14 @@ test("stays enabled and retries if Discord's message module is late", () => {
 
   assert.equal(harness.scheduled.length, 1);
   assert.equal(harness.storage.enabled, true);
+  assert.equal(harness.storage.diagnosticStatus, "Waiting");
+});
+
+test("shows startup failures in diagnostics without disabling itself", () => {
+  const harness = createHarness(1, { patchThrows: true });
+
+  assert.equal(harness.storage.enabled, true);
+  assert.equal(harness.storage.diagnosticStatus, "Startup error");
+  assert.match(harness.storage.diagnosticError, /patch failed/);
+  assert.equal(harness.calls.toast.length, 1);
 });
