@@ -14,6 +14,11 @@ test("manifest hash matches the published plugin bundle", () => {
   assert.equal(manifest.hash, hash);
 });
 
+test("bundle avoids unsupported Hermes logical-assignment syntax", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  assert.doesNotMatch(source, /\|\|=|&&=|\?\?=/);
+});
+
 function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
   const calls = { command: [], original: [], toast: [] };
