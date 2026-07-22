@@ -1,26 +1,22 @@
-(function (exports, vendetta) {
+(function (vendetta) {
   "use strict";
 
-  const { patcher, metro } = vendetta;
-  const React = metro.common.React;
+  let patcher;
+  let metro;
+  let React;
+  let storage = {};
+  let findByProps;
+  let findByStoreName;
   let View;
   let Text;
   let TextInput;
   let Pressable;
   let ScrollView;
   let Switch;
-  const fallbackStorage =
-    globalThis.__pluralAutoFallbackStorage ||
-    (globalThis.__pluralAutoFallbackStorage = {});
-  const storage =
-    (vendetta.plugin && vendetta.plugin.storage) || fallbackStorage;
-
   const DEFAULT_LINES = "Default proxy | proxy | message";
   const CHANNEL_DISABLED = "__pluralauto_disabled__";
   const LOG_PREFIX = "[PluralAuto]";
 
-  const findByProps = metro.findByProps;
-  const findByStoreName = metro.findByStoreName;
   let MessageActions;
   let ChannelStore;
   let SelectedChannelStore;
@@ -29,7 +25,19 @@
   let patchRetryTimer;
   let patchRetryCount = 0;
 
+  function resolveApi() {
+    patcher = patcher || vendetta.patcher;
+    metro = metro || vendetta.metro;
+    React = React || metro.common.React;
+    storage =
+      (vendetta.plugin && vendetta.plugin.storage) ||
+      storage;
+    findByProps = findByProps || metro.findByProps;
+    findByStoreName = findByStoreName || metro.findByStoreName;
+  }
+
   function resolveUI() {
+    resolveApi();
     if (View && Text && TextInput && Pressable && ScrollView && Switch) return;
 
     const RN = metro.common.ReactNative;
@@ -42,6 +50,7 @@
   }
 
   function resolveDiscordModules() {
+    resolveApi();
     MessageActions =
       MessageActions ||
       findByProps("sendMessage", "editMessage") ||
@@ -468,6 +477,7 @@
   }
 
   function Settings() {
+    resolveApi();
     resolveUI();
     resolveDiscordModules();
     try {
@@ -664,6 +674,7 @@
 
   function onLoad() {
     try {
+      resolveApi();
       ensureDefaults();
       setDiagnostic("Starting", "PluralAuto is starting…", null, false);
       attachMessagePatch();
@@ -689,7 +700,5 @@
     vendetta.logger?.log?.(LOG_PREFIX, "Unloaded");
   }
 
-  exports.default = { onLoad, onUnload, settings: Settings };
-  Object.defineProperty(exports, "__esModule", { value: true });
-  return exports;
-})({}, vendetta);
+  return { onLoad, onUnload, settings: Settings };
+})(vendetta);
