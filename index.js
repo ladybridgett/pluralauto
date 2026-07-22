@@ -3,8 +3,12 @@
 
   const { patcher, metro } = vendetta;
   const React = metro.common.React;
-  const RN = metro.common.ReactNative;
-  const { View, Text, TextInput, Pressable, ScrollView, Switch } = RN;
+  let View;
+  let Text;
+  let TextInput;
+  let Pressable;
+  let ScrollView;
+  let Switch;
   const fallbackStorage =
     globalThis.__pluralAutoFallbackStorage ||
     (globalThis.__pluralAutoFallbackStorage = {});
@@ -24,6 +28,18 @@
   let bypassChannelId;
   let patchRetryTimer;
   let patchRetryCount = 0;
+
+  function resolveUI() {
+    if (View && Text && TextInput && Pressable && ScrollView && Switch) return;
+
+    const RN = metro.common.ReactNative;
+    View = RN.View;
+    Text = RN.Text;
+    TextInput = RN.TextInput;
+    Pressable = RN.Pressable;
+    ScrollView = RN.ScrollView;
+    Switch = RN.Switch;
+  }
 
   function resolveDiscordModules() {
     MessageActions =
@@ -390,6 +406,7 @@
   }
 
   function Button({ title, selected, destructive, onPress }) {
+    resolveUI();
     return React.createElement(
       Pressable,
       {
@@ -414,6 +431,7 @@
   }
 
   function Row({ label, subLabel, value, onValueChange }) {
+    resolveUI();
     return React.createElement(
       View,
       {
@@ -441,6 +459,7 @@
   }
 
   function Heading({ children }) {
+    resolveUI();
     return React.createElement(
       Text,
       { style: { color: "white", fontWeight: "700", marginTop: 14 } },
@@ -449,6 +468,7 @@
   }
 
   function Settings() {
+    resolveUI();
     resolveDiscordModules();
     try {
       vendetta.storage.useProxy(storage);
