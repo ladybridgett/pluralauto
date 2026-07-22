@@ -67,6 +67,21 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
+test("v7 manifest hash matches its replies-and-attachments bundle", () => {
+  const root = path.join(__dirname, "..", "v7");
+  const source = fs.readFileSync(path.join(root, "index.js"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const hash = crypto.createHash("sha256").update(source).digest("hex");
+
+  assert.equal(manifest.hash, hash);
+});
+
+test("v7 retains the syntax level proven by the v4 loader test", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v7/index.js"), "utf8");
+
+  assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
+});
+
 function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(
     path.join(__dirname, options.sourcePath || "../index.js"),
@@ -494,4 +509,318 @@ test("v6 renders the restored settings screen", () => {
   assert.ok(tree);
   assert.equal(harness.storage.version, "6.0.0");
   assert.match(harness.storage.commandLines, /Default proxy \| proxy \| message/);
+});
+
+function createV7Harness(options = {}) {
+  const source = fs.readFileSync(path.join(__dirname, "../v7/index.js"), "utf8");
+  const storage = options.storage || {};
+  const calls = {
+    executor: [],
+    original: [],
+    toast: [],
+    dispatch: [],
+    bridgedUploads: [],
+  };
+  const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
+  const applicationId = "plural-userproxy-app";
+  const proxyOptions = [
+    { name: "message", type: 3 },
+    { name: "queue_for_reply", type: 5 },
+    ...Array.from({ length: 10 }, (_value, index) => ({
+      name: index === 0 ? "attachment" : `attachment${index}`,
+      type: 11,
+    })),
+  ];
+  const proxyCommand = {
+    id: "proxy-v7",
+    applicationId,
+    name: "proxy",
+    untranslatedName: "proxy",
+    type: 1,
+    version: "1",
+    options: options.missingQueue
+      ? proxyOptions.filter((option) => option.name !== "queue_for_reply")
+      : proxyOptions,
+  };
+  const replyCommand = {
+    id: "reply-v7",
+    applicationId,
+    name: "Reply",
+    untranslatedName: "Reply",
+    type: 3,
+    version: "1",
+    options: [],
+  };
+  let pendingReply = options.replyTarget
+    ? { channel, message: { id: options.replyTarget } }
+    : null;
+  let outgoingUploads = options.uploads ? options.uploads.slice() : [];
+
+  const uploadStore = {
+    getUploads(channelId, draftType) {
+      return channelId === channel.id && draftType === 0 ? outgoingUploads : [];
+    },
+    getUpload() {
+      return undefined;
+    },
+  };
+
+  const pendingReplyStore = {
+    getPendingReply() {
+      return pendingReply;
+    },
+  };
+
+  const MessageActions = {
+    sendMessage(...args) {
+      calls.original.push(args);
+      return { original: true };
+    },
+  };
+
+  function modernExecutor(payload) {
+    "APPLICATION_COMMAND_USED";
+    "optionValues";
+    calls.executor.push(payload);
+
+    if (payload.command.type === 1) {
+      for (const option of payload.command.options) {
+        if (option.type !== 11 || !(option.name in payload.optionValues)) continue;
+        calls.bridgedUploads.push(
+          uploadStore.getUpload(channel.id, option.name, 5),
+        );
+      }
+    }
+
+    if (payload.interactionLifecycleOptionsFactory) {
+      const lifecycle = payload.interactionLifecycleOptionsFactory();
+      if (options.replyFailure && payload.command.type === 3) {
+        lifecycle.onFailure(400, "Reply rejected");
+      } else {
+        lifecycle.onSuccess();
+      }
+    }
+  }
+
+  const vendetta = {
+    plugin: { storage },
+    patcher: {
+      instead(name, module, callback) {
+        if (options.patchThrows && name === "sendMessage") {
+          throw new Error("v7 patch failed");
+        }
+        const original = module[name];
+        module[name] = function patched(...args) {
+          return callback(args, (...originalArgs) => original.apply(module, originalArgs));
+        };
+        return () => {
+          module[name] = original;
+        };
+      },
+    },
+    metro: {
+      common: {
+        React: {
+          createElement(type, props, ...children) {
+            return { type, props: props || {}, children };
+          },
+          useState: () => [0, () => {}],
+        },
+        ReactNative: {
+          View() {}, Text() {}, TextInput() {}, Pressable() {}, ScrollView() {}, Switch() {},
+        },
+        FluxDispatcher: {
+          dispatch(action) {
+            calls.dispatch.push(action);
+            if (
+              action.type === "UPLOAD_ATTACHMENT_CLEAR_ALL_FILES"
+              && action.channelId === channel.id
+              && action.draftType === 0
+            ) {
+              outgoingUploads = [];
+            }
+            if (action.type === "DELETE_PENDING_REPLY") pendingReply = null;
+          },
+        },
+      },
+      findByStoreName(name) {
+        if (name === "ChannelStore") return { getChannel: () => channel };
+        if (name === "SelectedChannelStore") return { getChannelId: () => channel.id };
+        if (name === "UploadAttachmentStore") return uploadStore;
+        if (name === "PendingReplyStore") return pendingReplyStore;
+        if (name === "ApplicationCommandIndexStore") {
+          return {
+            query(_context, query) {
+              if (query.commandTypes.includes(3)) {
+                return {
+                  loading: false,
+                  commands: options.replyCommandMissing ? [] : [replyCommand],
+                };
+              }
+              return { loading: false, commands: [proxyCommand] };
+            },
+          };
+        }
+      },
+      findByProps(...props) {
+        if (props.includes("sendMessage")) return MessageActions;
+      },
+      findByName() {},
+      find(filter) {
+        const exports = { A: modernExecutor };
+        return filter(exports) ? exports : undefined;
+      },
+    },
+    ui: { toasts: { showToast(message) { calls.toast.push(message); } } },
+    logger: { error() {} },
+  };
+
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+    { vendetta, setTimeout, clearTimeout, Promise },
+  )(vendetta);
+  plugin.onLoad();
+
+  async function send(message, sendOptions) {
+    return MessageActions.sendMessage(channel.id, message, undefined, sendOptions);
+  }
+
+  return {
+    calls,
+    channel,
+    plugin,
+    proxyCommand,
+    replyCommand,
+    send,
+    storage,
+    uploadStore,
+  };
+}
+
+test("v7 evaluates without touching ShiggyCord APIs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../v7/index.js"), "utf8");
+  const accesses = [];
+  const untouchedHost = new Proxy({}, {
+    get(_target, property) {
+      accesses.push(String(property));
+      throw new Error(`Host API accessed during evaluation: ${String(property)}`);
+    },
+  });
+  const plugin = vm.runInNewContext(
+    `vendetta => { return ${source} }`,
+  )(untouchedHost);
+
+  assert.deepEqual(accesses, []);
+  assert.equal(typeof plugin.onLoad, "function");
+  assert.equal(typeof plugin.onUnload, "function");
+  assert.equal(typeof plugin.settings, "function");
+});
+
+test("v7 proxies attachment-only messages through /plu/ral attachment slots", async () => {
+  const upload = { id: "camera-file", filename: "photo.png" };
+  const harness = createV7Harness({ uploads: [upload] });
+  const result = await harness.send({ content: "", attachments: [upload] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 1);
+  assert.ok(harness.calls.executor[0].optionValues.attachment);
+  assert.equal(harness.calls.bridgedUploads[0], upload);
+  assert.ok(harness.calls.dispatch.some((action) => (
+    action.type === "UPLOAD_ATTACHMENT_CLEAR_ALL_FILES" && action.draftType === 0
+  )));
+  assert.equal(harness.calls.original.length, 0);
+});
+
+test("v7 queues and sends Discord replies through the matching Reply command", async () => {
+  const harness = createV7Harness({ replyTarget: "target-message-42" });
+  const result = await harness.send({ content: "hello in reply", attachments: [] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 2);
+  assert.equal(harness.calls.executor[0].command.name, "proxy");
+  assert.equal(
+    JSON.stringify(harness.calls.executor[0].optionValues.queue_for_reply),
+    JSON.stringify([{ type: "text", text: "true" }]),
+  );
+  assert.equal(harness.calls.executor[1].command.name, "Reply");
+  assert.equal(harness.calls.executor[1].commandTargetId, "target-message-42");
+  assert.ok(harness.calls.dispatch.some((action) => action.type === "DELETE_PENDING_REPLY"));
+  assert.equal(harness.calls.original.length, 0);
+});
+
+test("v7 combines replies and attachments", async () => {
+  const uploads = [
+    { id: "file-a", filename: "a.png" },
+    { id: "file-b", filename: "b.txt" },
+  ];
+  const harness = createV7Harness({ replyTarget: "target-with-files", uploads });
+  const result = await harness.send({ content: "files", attachments: uploads });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 2);
+  assert.ok(harness.calls.executor[0].optionValues.attachment);
+  assert.ok(harness.calls.executor[0].optionValues.attachment1);
+  assert.deepEqual(harness.calls.bridgedUploads, uploads);
+  assert.equal(harness.calls.executor[1].commandTargetId, "target-with-files");
+});
+
+test("v7 fails before queueing when the Reply context command is unavailable", async () => {
+  const harness = createV7Harness({
+    replyTarget: "target-missing-reply",
+    replyCommandMissing: true,
+  });
+  const result = await harness.send({ content: "do not queue", attachments: [] });
+
+  assert.equal(result.ok, false);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.calls.original.length, 0);
+  assert.match(harness.storage.lastError, /Reply message command was not found/);
+});
+
+test("v7 never falls back to an unproxied send after a reply was queued", async () => {
+  const harness = createV7Harness({
+    replyTarget: "target-rejected",
+    replyFailure: true,
+    storage: { sendNormallyOnError: true },
+  });
+  const result = await harness.send({ content: "queued already", attachments: [] });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.queuedForReply, true);
+  assert.equal(harness.calls.executor.length, 2);
+  assert.equal(harness.calls.original.length, 0);
+  assert.equal(harness.storage.status, "Reply queued");
+});
+
+test("v7 restores normal sending when reply and attachment proxying are disabled", async () => {
+  const upload = { id: "normal-file" };
+  const attachmentHarness = createV7Harness({
+    uploads: [upload],
+    storage: { proxyAttachments: false },
+  });
+  const replyHarness = createV7Harness({
+    replyTarget: "normal-reply",
+    storage: { proxyReplies: false },
+  });
+
+  const attachmentResult = await attachmentHarness.send({
+    content: "normal attachment",
+    attachments: [upload],
+  });
+  const replyResult = await replyHarness.send({ content: "normal reply", attachments: [] });
+
+  assert.equal(attachmentResult.original, true);
+  assert.equal(replyResult.original, true);
+  assert.equal(attachmentHarness.calls.executor.length, 0);
+  assert.equal(replyHarness.calls.executor.length, 0);
+});
+
+test("v7 renders enabled reply and attachment settings", () => {
+  const harness = createV7Harness();
+  const tree = harness.plugin.settings();
+
+  assert.ok(tree);
+  assert.equal(harness.storage.version, "7.0.0");
+  assert.equal(harness.storage.proxyReplies, true);
+  assert.equal(harness.storage.proxyAttachments, true);
 });
