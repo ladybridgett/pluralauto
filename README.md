@@ -1,4 +1,4 @@
-# PluralAuto
+# PluralAuto v6
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -19,7 +19,7 @@ It uses Discord's existing application-command executor. It does not use or requ
 In ShiggyCord, open **Settings → Plugins → +**, then paste the plugin folder URL:
 
 ```text
-https://ladybridgett.github.io/pluralauto/
+https://raw.githubusercontent.com/ladybridgett/pluralauto/main/v6/
 ```
 
 Paste the folder URL, not the GitHub repository URL and not a direct link to `manifest.json` or `index.js`.
