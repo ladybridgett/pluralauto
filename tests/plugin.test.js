@@ -14,9 +14,10 @@ test("manifest hash matches the published plugin bundle", () => {
   assert.equal(manifest.hash, hash);
 });
 
-function createHarness(channelType = 1) {
+function createHarness(channelType = 1, options = {}) {
   const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
   const calls = { command: [], original: [] };
+  const scheduled = [];
   const storage = {};
   const channel = { id: "dm-1", type: channelType, name: "Test DM" };
   const command = {
@@ -62,7 +63,9 @@ function createHarness(channelType = 1) {
         }
       },
       findByProps(...props) {
-        if (props.includes("sendMessage")) return MessageActions;
+        if (options.messageModule !== false && props.includes("sendMessage")) {
+          return MessageActions;
+        }
         return undefined;
       },
     },
@@ -74,7 +77,14 @@ function createHarness(channelType = 1) {
     logger: { log() {}, error() {} },
   };
 
-  const pluginModule = vm.runInNewContext(source, { vendetta });
+  const pluginModule = vm.runInNewContext(source, {
+    vendetta,
+    setTimeout(callback) {
+      scheduled.push(callback);
+      return scheduled.length;
+    },
+    clearTimeout() {},
+  });
   const plugin = pluginModule.default;
   plugin.onLoad();
 
@@ -88,7 +98,7 @@ function createHarness(channelType = 1) {
     );
   }
 
-  return { calls, command, plugin, send, storage };
+  return { calls, command, plugin, scheduled, send, storage };
 }
 
 test("proxies ordinary DM text through the configured slash command", async () => {
@@ -134,4 +144,11 @@ test("settings are initialized in the plugin's persistent storage", () => {
   assert.equal(harness.storage.defaultCommand, "proxy");
   assert.equal(harness.storage.sendNormallyOnError, false);
   assert.deepEqual(Object.keys(harness.storage.channelCommands), []);
+});
+
+test("stays enabled and retries if Discord's message module is late", () => {
+  const harness = createHarness(1, { messageModule: false });
+
+  assert.equal(harness.scheduled.length, 1);
+  assert.equal(harness.storage.enabled, true);
 });
