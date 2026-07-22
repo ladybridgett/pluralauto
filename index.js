@@ -49,6 +49,36 @@
     }
   }
 
+  function errorText(error) {
+    if (!error) return "";
+    return String(error?.stack || error?.message || error);
+  }
+
+  function setDiagnostic(status, message, error, notify) {
+    try {
+      storage.diagnosticStatus = status;
+      storage.diagnosticMessage = String(message || "");
+      storage.diagnosticError = errorText(error);
+      storage.diagnosticUpdatedAt = new Date().toISOString();
+    } catch (_) {}
+
+    if (notify) {
+      showToast(`PluralAuto: ${message}`, status === "Ready");
+    }
+  }
+
+  function diagnosticReport() {
+    return [
+      "PluralAuto diagnostics",
+      `Status: ${storage.diagnosticStatus || "Unknown"}`,
+      `Message: ${storage.diagnosticMessage || "No details"}`,
+      `Updated: ${storage.diagnosticUpdatedAt || "Unknown"}`,
+      storage.diagnosticError
+        ? `Error:\n${storage.diagnosticError}`
+        : "Error: none",
+    ].join("\n");
+  }
+
   function normaliseCommand(value) {
     return String(value || "")
       .trim()
@@ -291,6 +321,12 @@
           return { ok: true, pluralAuto: true };
         } catch (error) {
           vendetta.logger?.error?.(LOG_PREFIX, error);
+          setDiagnostic(
+            "Proxy error",
+            `Message blocked: ${error?.message || error}`,
+            error,
+            false,
+          );
           showToast(`PluralAuto blocked the message: ${error?.message || error}`, false);
 
           if (storage.sendNormallyOnError === true) {
@@ -306,17 +342,44 @@
   }
 
   function attachMessagePatch() {
-    if (unpatch || patchMessages()) {
-      patchRetryCount = 0;
-      vendetta.logger?.log?.(LOG_PREFIX, "Attached to outgoing messages");
-      return;
+    try {
+      if (unpatch || patchMessages()) {
+        const becameReady = storage.diagnosticStatus !== "Ready";
+        patchRetryCount = 0;
+        setDiagnostic(
+          "Ready",
+          "Automatic DM proxying is attached and ready.",
+          null,
+          becameReady,
+        );
+        vendetta.logger?.log?.(LOG_PREFIX, "Attached to outgoing messages");
+        return;
+      }
+
+      patchRetryCount += 1;
+      setDiagnostic(
+        "Waiting",
+        `Waiting for Discord's message module (${patchRetryCount}/30).`,
+        null,
+        false,
+      );
+    } catch (error) {
+      patchRetryCount += 1;
+      vendetta.logger?.error?.(LOG_PREFIX, "Startup patch failed", error);
+      setDiagnostic(
+        "Startup error",
+        error?.message || String(error),
+        error,
+        patchRetryCount === 1,
+      );
     }
 
-    patchRetryCount += 1;
     if (patchRetryCount >= 30) {
-      showToast(
-        "PluralAuto loaded, but Discord's message module was unavailable. Restart Discord and try again.",
-        false,
+      setDiagnostic(
+        "Startup error",
+        "Discord's message module could not be attached after 30 attempts.",
+        storage.diagnosticError,
+        true,
       );
       return;
     }
@@ -385,7 +448,9 @@
 
   function Settings() {
     resolveDiscordModules();
-    vendetta.storage.useProxy(storage);
+    try {
+      vendetta.storage.useProxy(storage);
+    } catch (_) {}
     const channelId = SelectedChannelStore?.getChannelId?.();
     const channel = channelId ? ChannelStore?.getChannel?.(channelId) : null;
     const commands = parseCommands(storage.commandLines);
@@ -406,6 +471,62 @@
         { style: { color: "#b5bac1", marginTop: 4, marginBottom: 10 } },
         "One proxy per line: Label | command | message-option",
       ),
+      React.createElement(Heading, null, "Diagnostics"),
+      React.createElement(
+        View,
+        {
+          style: {
+            backgroundColor: "#1e1f22",
+            borderRadius: 8,
+            padding: 12,
+            marginVertical: 6,
+          },
+        },
+        React.createElement(
+          Text,
+          {
+            selectable: true,
+            style: {
+              color:
+                storage.diagnosticStatus === "Ready" ? "#23a55a" : "#f0b232",
+              fontWeight: "700",
+            },
+          },
+          storage.diagnosticStatus || "Unknown",
+        ),
+        React.createElement(
+          Text,
+          { selectable: true, style: { color: "white", marginTop: 4 } },
+          storage.diagnosticMessage || "No diagnostic message yet.",
+        ),
+        storage.diagnosticError
+          ? React.createElement(
+              Text,
+              {
+                selectable: true,
+                style: { color: "#da373c", fontSize: 12, marginTop: 8 },
+              },
+              storage.diagnosticError,
+            )
+          : null,
+      ),
+      React.createElement(Button, {
+        title: "Copy diagnostics",
+        onPress: () => {
+          metro.common.clipboard?.setString?.(diagnosticReport());
+          showToast("PluralAuto diagnostics copied.", true);
+        },
+      }),
+      React.createElement(Button, {
+        title: "Retry startup",
+        onPress: () => {
+          if (patchRetryTimer) clearTimeout(patchRetryTimer);
+          patchRetryTimer = undefined;
+          patchRetryCount = 0;
+          setDiagnostic("Starting", "Retrying startup…", null, false);
+          attachMessagePatch();
+        },
+      }),
       React.createElement(TextInput, {
         multiline: true,
         value: storage.commandLines || DEFAULT_LINES,
@@ -520,9 +641,20 @@
   }
 
   function onLoad() {
-    ensureDefaults();
-    attachMessagePatch();
-    vendetta.logger?.log?.(LOG_PREFIX, "Loaded");
+    try {
+      ensureDefaults();
+      setDiagnostic("Starting", "PluralAuto is starting…", null, false);
+      attachMessagePatch();
+      vendetta.logger?.log?.(LOG_PREFIX, "Loaded");
+    } catch (error) {
+      vendetta.logger?.error?.(LOG_PREFIX, "Failed to load", error);
+      setDiagnostic(
+        "Startup error",
+        error?.message || String(error),
+        error,
+        true,
+      );
+    }
   }
 
   function onUnload() {
