@@ -1,0 +1,14 @@
+{
+  "name": "PluralAuto v4 Test",
+  "description": "Version 4.0.0 • Minimal ShiggyCord loader compatibility test.",
+  "authors": [
+    {
+      "name": "Brigitte"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_commands"
+  },
+  "hash": "7d28ab5169411bf8b718bcff4ece4cc794e8e0ae2faff1897c4655bae65a41ca"
+}
