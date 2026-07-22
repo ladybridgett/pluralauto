@@ -1,0 +1,14 @@
+{
+  "name": "PluralAuto v2",
+  "description": "Fresh-cache, Hermes-compatible Plu/ral userproxy autoproxy for ShiggyCord DMs.",
+  "authors": [
+    {
+      "name": "Brigitte"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_commands"
+  },
+  "hash": "ef9c050f1844086555c663fa8c46437598d84c0749321c820933dd7803323626"
+}
