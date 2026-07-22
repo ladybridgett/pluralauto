@@ -5,7 +5,9 @@
   const React = metro.common.React;
   const RN = metro.common.ReactNative;
   const { View, Text, TextInput, Pressable, ScrollView, Switch } = RN;
-  const storage = vendetta.plugin.storage;
+  const storage =
+    vendetta.plugin?.storage ||
+    (globalThis.__pluralAutoFallbackStorage ||= {});
 
   const DEFAULT_LINES = "Default proxy | proxy | message";
   const CHANNEL_DISABLED = "__pluralauto_disabled__";
@@ -13,16 +15,28 @@
 
   const findByProps = metro.findByProps;
   const findByStoreName = metro.findByStoreName;
-  const MessageActions = findByProps("sendMessage");
-  const ChannelStore =
-    findByStoreName?.("ChannelStore") ||
-    findByProps("getChannel", "getDMFromUserId");
-  const SelectedChannelStore =
-    findByStoreName?.("SelectedChannelStore") ||
-    findByProps("getChannelId", "getVoiceChannelId");
-
+  let MessageActions;
+  let ChannelStore;
+  let SelectedChannelStore;
   let unpatch;
   let bypassChannelId;
+  let patchRetryTimer;
+  let patchRetryCount = 0;
+
+  function resolveDiscordModules() {
+    MessageActions =
+      MessageActions ||
+      findByProps("sendMessage", "editMessage") ||
+      findByProps("sendMessage");
+    ChannelStore =
+      ChannelStore ||
+      findByStoreName?.("ChannelStore") ||
+      findByProps("getChannel", "getDMFromUserId");
+    SelectedChannelStore =
+      SelectedChannelStore ||
+      findByStoreName?.("SelectedChannelStore") ||
+      findByProps("getChannelId", "getVoiceChannelId");
+  }
 
   function showToast(message, success) {
     try {
@@ -78,6 +92,7 @@
   }
 
   function isTargetDM(channelId) {
+    resolveDiscordModules();
     const channel = ChannelStore?.getChannel?.(channelId);
     if (!channel) return false;
 
@@ -204,6 +219,7 @@
   }
 
   async function executeUserproxy(entry, content, channelId) {
+    resolveDiscordModules();
     const command = discoverCommand(entry.command, channelId);
     if (!command) {
       throw new Error(
@@ -243,11 +259,10 @@
   }
 
   function patchMessages() {
-    if (!MessageActions?.sendMessage) {
-      throw new Error("Discord's sendMessage module was not found.");
-    }
+    resolveDiscordModules();
+    if (!MessageActions?.sendMessage) return false;
 
-    return patcher.instead(
+    unpatch = patcher.instead(
       "sendMessage",
       MessageActions,
       async (args, original) => {
@@ -286,6 +301,27 @@
         }
       },
     );
+
+    return true;
+  }
+
+  function attachMessagePatch() {
+    if (unpatch || patchMessages()) {
+      patchRetryCount = 0;
+      vendetta.logger?.log?.(LOG_PREFIX, "Attached to outgoing messages");
+      return;
+    }
+
+    patchRetryCount += 1;
+    if (patchRetryCount >= 30) {
+      showToast(
+        "PluralAuto loaded, but Discord's message module was unavailable. Restart Discord and try again.",
+        false,
+      );
+      return;
+    }
+
+    patchRetryTimer = setTimeout(attachMessagePatch, 1000);
   }
 
   function Button({ title, selected, destructive, onPress }) {
@@ -348,6 +384,7 @@
   }
 
   function Settings() {
+    resolveDiscordModules();
     vendetta.storage.useProxy(storage);
     const channelId = SelectedChannelStore?.getChannelId?.();
     const channel = channelId ? ChannelStore?.getChannel?.(channelId) : null;
@@ -484,11 +521,14 @@
 
   function onLoad() {
     ensureDefaults();
-    unpatch = patchMessages();
+    attachMessagePatch();
     vendetta.logger?.log?.(LOG_PREFIX, "Loaded");
   }
 
   function onUnload() {
+    if (patchRetryTimer) clearTimeout(patchRetryTimer);
+    patchRetryTimer = undefined;
+    patchRetryCount = 0;
     unpatch?.();
     unpatch = undefined;
     bypassChannelId = undefined;
