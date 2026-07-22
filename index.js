@@ -1,27 +1,45 @@
-(function(exports, patcher, metro, storageApi, toasts, assets, common) {
+(function (exports, vendetta) {
   "use strict";
 
-  const React = common.React;
-  const RN = common.ReactNative;
+  const { patcher, metro } = vendetta;
+  const React = metro.common.React;
+  const RN = metro.common.ReactNative;
   const { View, Text, TextInput, Pressable, ScrollView, Switch } = RN;
+  const storage = vendetta.plugin.storage;
+
   const DEFAULT_LINES = "Default proxy | proxy | message";
-  let store = {};
-  let unpatch;
-  let bypassOnce = false;
+  const CHANNEL_DISABLED = "__pluralauto_disabled__";
+  const LOG_PREFIX = "[PluralAuto]";
 
   const findByProps = metro.findByProps;
   const findByStoreName = metro.findByStoreName;
-  const MessageActions = findByProps("sendMessage", "editMessage");
-  const ChannelStore = (findByStoreName && findByStoreName("ChannelStore")) || findByProps("getChannel", "getDMFromUserId");
-  const SelectedChannelStore = (findByStoreName && findByStoreName("SelectedChannelStore")) || findByProps("getChannelId", "getVoiceChannelId");
+  const MessageActions = findByProps("sendMessage");
+  const ChannelStore =
+    findByStoreName?.("ChannelStore") ||
+    findByProps("getChannel", "getDMFromUserId");
+  const SelectedChannelStore =
+    findByStoreName?.("SelectedChannelStore") ||
+    findByProps("getChannelId", "getVoiceChannelId");
 
-  function toast(message) {
-    try { toasts.showToast(message, assets.getAssetIDByName("Check")); }
-    catch (_) { console.log("[Userproxy AutoCommand]", message); }
+  let unpatch;
+  let bypassChannelId;
+
+  function showToast(message, success) {
+    try {
+      const icon = vendetta.ui.assets.getAssetIDByName(
+        success === false ? "Small" : "Check",
+      );
+      vendetta.ui.toasts.showToast(message, icon);
+    } catch (_) {
+      vendetta.logger?.log?.(LOG_PREFIX, message);
+    }
   }
 
   function normaliseCommand(value) {
-    return String(value || "").trim().replace(/^\//, "").toLowerCase();
+    return String(value || "")
+      .trim()
+      .replace(/^\/+/, "")
+      .toLowerCase();
   }
 
   function parseCommands(text) {
@@ -32,20 +50,31 @@
       const line = raw.trim();
       if (!line || line.startsWith("#")) continue;
 
-      const parts = line.split("|").map(x => x.trim());
+      const parts = line.split("|").map((part) => part.trim());
       const command = normaliseCommand(parts.length > 1 ? parts[1] : parts[0]);
-
       if (!command || seen.has(command)) continue;
-      seen.add(command);
 
+      seen.add(command);
       commands.push({
         label: parts.length > 1 && parts[0] ? parts[0] : `/${command}`,
         command,
-        option: String(parts[2] || "message").replace(/^\//, "")
+        option: String(parts[2] || "message").trim().replace(/^\/+/, ""),
       });
     }
 
     return commands;
+  }
+
+  function ensureDefaults() {
+    if (storage.commandLines == null) storage.commandLines = DEFAULT_LINES;
+    if (storage.channelCommands == null) storage.channelCommands = {};
+    if (storage.enabled == null) storage.enabled = true;
+    if (storage.includeGroupDMs == null) storage.includeGroupDMs = false;
+    if (storage.sendNormallyOnError == null) storage.sendNormallyOnError = false;
+
+    if (storage.defaultCommand == null) {
+      storage.defaultCommand = parseCommands(storage.commandLines)[0]?.command || "";
+    }
   }
 
   function isTargetDM(channelId) {
@@ -53,190 +82,169 @@
     if (!channel) return false;
 
     return channel.type === 1 ||
-      (store.includeGroupDMs !== false && channel.type === 3);
+      (storage.includeGroupDMs === true && channel.type === 3);
   }
 
-  function flattenCommands(value, out, seen) {
-    out = out || [];
-    seen = seen || new Set();
-
-    if (
-      !value ||
-      seen.has(value) ||
-      out.length > 5000 ||
-      typeof value !== "object"
-    ) return out;
-
-    seen.add(value);
-
-    if (
-      typeof value.name === "string" &&
-      (value.id || value.application_id || value.applicationId)
-    ) {
-      out.push(value);
-    }
-
-    if (Array.isArray(value)) {
-      for (const item of value) flattenCommands(item, out, seen);
-    } else {
-      for (const key of Object.keys(value)) {
-        if (
-          ["commands", "applicationCommands", "items", "results", "sections", "data"]
-            .includes(key)
-        ) {
-          try {
-            flattenCommands(value[key], out, seen);
-          } catch (_) {}
-        }
-      }
-    }
-
-    return out;
-  }
-
-  function discoverCommand(commandName, channelId) {
-    const stores = [
-      findByStoreName && findByStoreName("ApplicationCommandStore"),
-      findByProps("getApplicationCommands"),
-      findByProps("getApplicationCommand"),
-      findByProps("getQueryCommands")
-    ].filter(Boolean);
-
-    const candidates = [];
-
-    for (const candidateStore of stores) {
-      for (const method of [
-        "getApplicationCommands",
-        "getQueryCommands",
-        "getCommands",
-        "getAllCommands"
-      ]) {
-        const fn = candidateStore?.[method];
-        if (typeof fn !== "function") continue;
-
-        for (const args of [
-          [channelId],
-          [channelId, ""],
-          [],
-          [null, channelId]
-        ]) {
-          try {
-            flattenCommands(fn.apply(candidateStore, args), candidates);
-          } catch (_) {}
-        }
-      }
-    }
-
-    const wanted = normaliseCommand(commandName);
-
-    return candidates.find(
-      command => normaliseCommand(command.name) === wanted
+  function looksLikeCommand(value) {
+    return Boolean(
+      value &&
+        typeof value === "object" &&
+        typeof value.name === "string" &&
+        (typeof value.execute === "function" ||
+          value.id ||
+          value.applicationId ||
+          value.application_id),
     );
   }
 
-  function optionPayload(command, optionName, content) {
-    const available = Array.isArray(command?.options)
-      ? command.options
-      : [];
+  function collectCommands(value, output, seen, depth) {
+    if (
+      value == null ||
+      typeof value !== "object" ||
+      seen.has(value) ||
+      output.length >= 5000 ||
+      depth > 10
+    ) {
+      return;
+    }
 
+    seen.add(value);
+    if (looksLikeCommand(value)) output.push(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        collectCommands(item, output, seen, depth + 1);
+      }
+      return;
+    }
+
+    for (const key of Object.keys(value)) {
+      if (["channel", "guild", "author", "member", "user"].includes(key)) {
+        continue;
+      }
+
+      try {
+        collectCommands(value[key], output, seen, depth + 1);
+      } catch (_) {}
+    }
+  }
+
+  function commandSources(channelId) {
+    const sources = [
+      findByStoreName?.("ApplicationCommandStore"),
+      findByProps("getApplicationCommands"),
+      findByProps("getApplicationCommand"),
+      findByProps("getQueryCommands"),
+      findByProps("getBuiltInCommands"),
+    ].filter(Boolean);
+
+    const values = [];
+    const methods = [
+      ["getApplicationCommands", [[channelId], [channelId, ""], []]],
+      ["getQueryCommands", [[channelId, ""], [channelId], [""], []]],
+      ["getCommands", [[channelId], []]],
+      ["getAllCommands", [[channelId], []]],
+      ["getBuiltInCommands", [[1, true, false], [[1], true, false]]],
+    ];
+
+    for (const source of sources) {
+      values.push(source);
+
+      for (const [method, variants] of methods) {
+        const fn = source?.[method];
+        if (typeof fn !== "function") continue;
+
+        for (const args of variants) {
+          try {
+            values.push(fn.apply(source, args));
+          } catch (_) {}
+        }
+      }
+    }
+
+    return values;
+  }
+
+  function discoverCommand(commandName, channelId) {
+    const candidates = [];
+    const seen = new Set();
+
+    for (const value of commandSources(channelId)) {
+      collectCommands(value, candidates, seen, 0);
+    }
+
+    const wanted = normaliseCommand(commandName);
+    const matches = candidates.filter(
+      (command) => normaliseCommand(command.name) === wanted,
+    );
+
+    return (
+      matches.find((command) => typeof command.execute === "function") ||
+      matches[0]
+    );
+  }
+
+  function buildArguments(command, optionName, content) {
+    const available = Array.isArray(command?.options) ? command.options : [];
     const option =
-      available.find(x => x.name === optionName) ||
-      available.find(x => ["message", "text", "content"].includes(x.name)) ||
-      available.find(x => x.type === 3) ||
+      available.find((item) => item.name === optionName) ||
+      available.find((item) => ["message", "text", "content"].includes(item.name)) ||
+      available.find((item) => item.type === 3) ||
       { name: optionName || "message", type: 3 };
 
-    return [{
-      name: option.name,
-      type: option.type == null ? 3 : option.type,
-      value: content
-    }];
+    return [
+      {
+        name: option.name,
+        type: option.type == null ? 3 : option.type,
+        value: content,
+        focused: undefined,
+        options: [],
+      },
+    ];
   }
 
   async function executeUserproxy(entry, content, channelId) {
     const command = discoverCommand(entry.command, channelId);
-
     if (!command) {
       throw new Error(
-        `/${entry.command} was not found. Open the slash-command picker in this DM once, then retry.`
+        `/${entry.command} was not found. Open /${entry.command} in this DM once, then retry.`,
       );
     }
 
-    const channel = ChannelStore?.getChannel?.(channelId);
-    const options = optionPayload(command, entry.option, content);
-
-    const context = {
-      channel,
-      channelId,
-      guild: null,
-      guildId: null,
-      command,
-      options,
-      optionValues: Object.fromEntries(
-        options.map(x => [x.name, x.value])
-      ),
-      attachments: []
-    };
-
-    const modules = [
-      findByProps("executeApplicationCommand"),
-      findByProps("executeCommand"),
-      findByProps("executeChatInputCommand"),
-      findByProps("sendApplicationCommand")
-    ].filter(Boolean);
-
-    let lastError;
-
-    for (const module of modules) {
-      for (const method of [
-        "executeApplicationCommand",
-        "executeCommand",
-        "executeChatInputCommand",
-        "sendApplicationCommand"
-      ]) {
-        const fn = module?.[method];
-        if (typeof fn !== "function") continue;
-
-        const variants = [
-          () => fn.call(module, command, options, context),
-          () => fn.call(module, command, context, options),
-          () => fn.call(module, context),
-          () => fn.call(module, {
-            ...context,
-            applicationCommand: command
-          })
-        ];
-
-        for (const invoke of variants) {
-          try {
-            await Promise.resolve(invoke());
-            return;
-          } catch (error) {
-            lastError = error;
-          }
-        }
-      }
+    if (typeof command.execute !== "function") {
+      throw new Error(`/${entry.command} cannot be executed on this Discord build.`);
     }
 
-    throw lastError || new Error(
-      "Discord's application-command executor was not found on this build."
+    const channel = ChannelStore?.getChannel?.(channelId);
+    await Promise.resolve(
+      command.execute(buildArguments(command, entry.option, content), {
+        channel,
+        guild: null,
+      }),
     );
   }
 
   function selectedEntry(channelId) {
-    const commands = parseCommands(store.commandLines);
+    const selected = storage.channelCommands?.[channelId];
+    if (selected === CHANNEL_DISABLED) return null;
 
-    const selected =
-      store.channelCommands?.[channelId] ||
-      store.defaultCommand;
+    const commandName = selected || storage.defaultCommand;
+    return parseCommands(storage.commandLines).find(
+      (entry) => entry.command === normaliseCommand(commandName),
+    );
+  }
 
-    return commands.find(
-      x => x.command === normaliseCommand(selected)
+  function hasUnsupportedPayload(message) {
+    return Boolean(
+      message?.attachments?.length ||
+        message?.stickerIds?.length ||
+        message?.sticker_ids?.length,
     );
   }
 
   function patchMessages() {
     if (!MessageActions?.sendMessage) {
-      throw new Error("sendMessage module not found");
+      throw new Error("Discord's sendMessage module was not found.");
     }
 
     return patcher.instead(
@@ -246,22 +254,16 @@
         const channelId = args[0];
         const message = args[1];
 
-        if (bypassOnce) {
-          bypassOnce = false;
+        if (bypassChannelId === "*" || bypassChannelId === channelId) {
+          bypassChannelId = undefined;
           return original(...args);
         }
 
         if (
-          store.enabled === false ||
+          storage.enabled === false ||
           !message?.content?.trim() ||
-          !isTargetDM(channelId)
-        ) {
-          return original(...args);
-        }
-
-        if (
-          message.attachments?.length ||
-          message.stickerIds?.length
+          !isTargetDM(channelId) ||
+          hasUnsupportedPayload(message)
         ) {
           return original(...args);
         }
@@ -270,63 +272,47 @@
         if (!entry) return original(...args);
 
         try {
-          await executeUserproxy(
-            entry,
-            message.content,
-            channelId
-          );
-
-          return {
-            ok: true,
-            userproxyAutoCommand: true
-          };
+          await executeUserproxy(entry, message.content, channelId);
+          return { ok: true, pluralAuto: true };
         } catch (error) {
-          console.error("[Userproxy AutoCommand]", error);
+          vendetta.logger?.error?.(LOG_PREFIX, error);
+          showToast(`PluralAuto blocked the message: ${error?.message || error}`, false);
 
-          toast(
-            `Userproxy failed: ${
-              error?.message || error
-            }`
-          );
-
-          if (store.sendNormallyOnError !== false) {
+          if (storage.sendNormallyOnError === true) {
             return original(...args);
           }
 
-          throw error;
+          return { ok: false, pluralAuto: true, error };
         }
-      }
+      },
     );
   }
 
-  function Button(props) {
+  function Button({ title, selected, destructive, onPress }) {
     return React.createElement(
       Pressable,
       {
-        onPress: props.onPress,
+        onPress,
         style: {
           padding: 12,
           marginVertical: 4,
           borderRadius: 8,
-          backgroundColor: props.selected
-            ? "#5865F2"
-            : "#3f4147"
-        }
+          backgroundColor: selected
+            ? destructive
+              ? "#da373c"
+              : "#5865f2"
+            : "#3f4147",
+        },
       },
       React.createElement(
         Text,
-        {
-          style: {
-            color: "white",
-            fontWeight: props.selected ? "700" : "400"
-          }
-        },
-        props.title
-      )
+        { style: { color: "white", fontWeight: selected ? "700" : "400" } },
+        title,
+      ),
     );
   }
 
-  function Row(props) {
+  function Row({ label, subLabel, value, onValueChange }) {
     return React.createElement(
       View,
       {
@@ -334,306 +320,182 @@
           flexDirection: "row",
           justifyContent: "space-between",
           alignItems: "center",
-          paddingVertical: 10
-        }
+          paddingVertical: 10,
+        },
       },
       React.createElement(
-        Text,
-        {
-          style: {
-            color: "white",
-            flex: 1
-          }
-        },
-        props.label
+        View,
+        { style: { flex: 1, paddingRight: 12 } },
+        React.createElement(Text, { style: { color: "white" } }, label),
+        subLabel
+          ? React.createElement(
+              Text,
+              { style: { color: "#b5bac1", fontSize: 12, marginTop: 2 } },
+              subLabel,
+            )
+          : null,
       ),
-      React.createElement(Switch, {
-        value: props.value,
-        onValueChange: props.onValueChange
-      })
+      React.createElement(Switch, { value, onValueChange }),
+    );
+  }
+
+  function Heading({ children }) {
+    return React.createElement(
+      Text,
+      { style: { color: "white", fontWeight: "700", marginTop: 14 } },
+      children,
     );
   }
 
   function Settings() {
-    const [, redraw] = React.useReducer(x => x + 1, 0);
+    vendetta.storage.useProxy(storage);
+    const channelId = SelectedChannelStore?.getChannelId?.();
+    const channel = channelId ? ChannelStore?.getChannel?.(channelId) : null;
+    const commands = parseCommands(storage.commandLines);
+    const channelSelection = channelId
+      ? storage.channelCommands?.[channelId]
+      : undefined;
 
-    const channelId =
-      SelectedChannelStore?.getChannelId?.();
-
-    const commands = parseCommands(store.commandLines);
-
-    const selected =
-      channelId && store.channelCommands
-        ? store.channelCommands[channelId]
-        : undefined;
-
-    const children = [];
-
-    children.push(
+    return React.createElement(
+      ScrollView,
+      { contentContainerStyle: { padding: 16, paddingBottom: 40 } },
       React.createElement(
         Text,
-        {
-          key: "title",
-          style: {
-            color: "white",
-            fontSize: 19,
-            fontWeight: "700",
-            marginBottom: 8
-          }
-        },
-        "Userproxy AutoCommand"
-      )
-    );
-
-    children.push(
+        { style: { color: "white", fontSize: 19, fontWeight: "700" } },
+        "PluralAuto",
+      ),
       React.createElement(
         Text,
-        {
-          key: "hint",
-          style: {
-            color: "#b5bac1",
-            marginBottom: 10
-          }
-        },
-        "One entry per line: Label | command | message-option"
-      )
-    );
-
-    children.push(
+        { style: { color: "#b5bac1", marginTop: 4, marginBottom: 10 } },
+        "One proxy per line: Label | command | message-option",
+      ),
       React.createElement(TextInput, {
-        key: "input",
         multiline: true,
-        value: store.commandLines || DEFAULT_LINES,
-        onChangeText: value => {
-          store.commandLines = value;
-          redraw();
+        value: storage.commandLines || DEFAULT_LINES,
+        onChangeText: (value) => {
+          storage.commandLines = value;
         },
         placeholder: "Alice | alice | message",
         placeholderTextColor: "#777",
+        autoCapitalize: "none",
+        autoCorrect: false,
         style: {
           minHeight: 130,
           color: "white",
           backgroundColor: "#1e1f22",
           borderRadius: 8,
           padding: 12,
-          textAlignVertical: "top"
-        }
-      })
-    );
-
-    children.push(
-      React.createElement(Row, {
-        key: "enabled",
-        label: "Enable automatic commands",
-        value: store.enabled !== false,
-        onValueChange: value => {
-          store.enabled = value;
-          redraw();
-        }
-      })
-    );
-
-    children.push(
-      React.createElement(Row, {
-        key: "group",
-        label: "Include group DMs",
-        value: store.includeGroupDMs !== false,
-        onValueChange: value => {
-          store.includeGroupDMs = value;
-          redraw();
-        }
-      })
-    );
-
-    children.push(
-      React.createElement(Row, {
-        key: "fallback",
-        label: "Send normally if proxying fails",
-        value: store.sendNormallyOnError !== false,
-        onValueChange: value => {
-          store.sendNormallyOnError = value;
-          redraw();
-        }
-      })
-    );
-
-    children.push(
-      React.createElement(
-        Text,
-        {
-          key: "default-title",
-          style: {
-            color: "white",
-            fontWeight: "700",
-            marginTop: 12
-          }
+          textAlignVertical: "top",
         },
-        "Default command"
-      )
-    );
-
-    for (const entry of commands) {
-      children.push(
+      }),
+      React.createElement(Row, {
+        label: "Enable automatic proxying",
+        value: storage.enabled !== false,
+        onValueChange: (value) => {
+          storage.enabled = value;
+        },
+      }),
+      React.createElement(Row, {
+        label: "Include group DMs",
+        value: storage.includeGroupDMs === true,
+        onValueChange: (value) => {
+          storage.includeGroupDMs = value;
+        },
+      }),
+      React.createElement(Row, {
+        label: "Send normally if proxying fails",
+        subLabel: "Off by default so a failed command cannot leak an unproxied message.",
+        value: storage.sendNormallyOnError === true,
+        onValueChange: (value) => {
+          storage.sendNormallyOnError = value;
+        },
+      }),
+      React.createElement(Heading, null, "Default proxy"),
+      React.createElement(Button, {
+        title: "No default proxy",
+        selected: !storage.defaultCommand,
+        onPress: () => {
+          storage.defaultCommand = "";
+        },
+      }),
+      ...commands.map((entry) =>
         React.createElement(Button, {
           key: `default-${entry.command}`,
           title: `${entry.label}  /${entry.command}`,
-          selected: store.defaultCommand === entry.command,
+          selected: storage.defaultCommand === entry.command,
           onPress: () => {
-            store.defaultCommand = entry.command;
-            redraw();
-          }
-        })
-      );
-    }
-
-    children.push(
+            storage.defaultCommand = entry.command;
+          },
+        }),
+      ),
+      React.createElement(Heading, null, "Current DM"),
       React.createElement(
         Text,
-        {
-          key: "dm-title",
-          style: {
-            color: "white",
-            fontWeight: "700",
-            marginTop: 12
-          }
-        },
-        "Current DM"
-      )
-    );
-
-    children.push(
-      React.createElement(
-        Text,
-        {
-          key: "dm-id",
-          style: {
-            color: "#b5bac1",
-            marginBottom: 4
-          }
-        },
-        channelId || "Open a DM before entering these settings."
-      )
-    );
-
-    if (channelId) {
-      for (const entry of commands) {
-        children.push(
-          React.createElement(Button, {
-            key: `channel-${entry.command}`,
-            title: `${entry.label}  /${entry.command}`,
-            selected: selected === entry.command,
-            onPress: () => {
-              store.channelCommands =
-                store.channelCommands || {};
-
-              store.channelCommands[channelId] =
-                entry.command;
-
-              redraw();
-            }
-          })
-        );
-      }
-
-      children.push(
-        React.createElement(Button, {
-          key: "use-default",
-          title: "Use default in this DM",
-          selected: !selected,
-          onPress: () => {
-            if (store.channelCommands) {
-              delete store.channelCommands[channelId];
-            }
-
-            redraw();
-          }
-        })
-      );
-    }
-
-    children.push(
+        { style: { color: "#b5bac1", marginVertical: 4 } },
+        channel && (channel.type === 1 || channel.type === 3)
+          ? channel.name || channelId
+          : "Open a DM, then return here to choose its proxy.",
+      ),
+      channelId && channel && (channel.type === 1 || channel.type === 3)
+        ? React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(Button, {
+              title: "Use the default proxy in this DM",
+              selected: channelSelection == null,
+              onPress: () => {
+                delete storage.channelCommands[channelId];
+              },
+            }),
+            React.createElement(Button, {
+              title: "Disable proxying in this DM",
+              destructive: true,
+              selected: channelSelection === CHANNEL_DISABLED,
+              onPress: () => {
+                storage.channelCommands[channelId] = CHANNEL_DISABLED;
+              },
+            }),
+            ...commands.map((entry) =>
+              React.createElement(Button, {
+                key: `channel-${entry.command}`,
+                title: `${entry.label}  /${entry.command}`,
+                selected: channelSelection === entry.command,
+                onPress: () => {
+                  storage.channelCommands[channelId] = entry.command;
+                },
+              }),
+            ),
+          )
+        : null,
       React.createElement(Button, {
-        key: "bypass",
         title: "Bypass proxy for the next message",
         onPress: () => {
-          bypassOnce = true;
-          toast("The next message will be sent normally.");
-        }
-      })
-    );
-
-    children.push(
+          bypassChannelId = channelId || "*";
+          showToast("The next message will be sent normally.", true);
+        },
+      }),
       React.createElement(
         Text,
-        {
-          key: "footer",
-          style: {
-            color: "#b5bac1",
-            marginTop: 10,
-            marginBottom: 30
-          }
-        },
-        "Attachments and stickers are sent normally. Open each userproxy slash command once so Discord caches it locally."
-      )
-    );
-
-    return React.createElement(
-      ScrollView,
-      { style: { padding: 16 } },
-      children
+        { style: { color: "#b5bac1", marginTop: 10 } },
+        "Attachments and stickers are sent normally. If a proxy command is missing, open that slash command once in the DM so Discord caches it, then retry.",
+      ),
     );
   }
 
-  async function onLoad() {
-    store =
-      globalThis.__pluralautoStore ||
-      (globalThis.__pluralautoStore = {});
-
-    if (store.commandLines == null) {
-      store.commandLines = DEFAULT_LINES;
-    }
-
-    if (store.channelCommands == null) {
-      store.channelCommands = {};
-    }
-
-    if (store.enabled == null) {
-      store.enabled = true;
-    }
-
-    if (store.includeGroupDMs == null) {
-      store.includeGroupDMs = true;
-    }
-
-    if (store.sendNormallyOnError == null) {
-      store.sendNormallyOnError = true;
-    }
-
+  function onLoad() {
+    ensureDefaults();
     unpatch = patchMessages();
+    vendetta.logger?.log?.(LOG_PREFIX, "Loaded");
   }
 
   function onUnload() {
-    if (unpatch) unpatch();
+    unpatch?.();
     unpatch = undefined;
+    bypassChannelId = undefined;
+    vendetta.logger?.log?.(LOG_PREFIX, "Unloaded");
   }
 
-  exports.default = {
-    onLoad,
-    onUnload,
-    settings: Settings
-  };
-
-  Object.defineProperty(exports, "__esModule", {
-    value: true
-  });
-
+  exports.default = { onLoad, onUnload, settings: Settings };
+  Object.defineProperty(exports, "__esModule", { value: true });
   return exports;
-})(
-  {},
-  vendetta.patcher,
-  vendetta.metro,
-  vendetta.storage,
-  vendetta.ui.toasts,
-  vendetta.ui.assets,
-  vendetta.metro.common
-);
+})({}, vendetta);
