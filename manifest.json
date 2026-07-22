@@ -1,0 +1,15 @@
+{
+  "name": "Userproxy AutoCommand",
+  "description": "Automatically runs a selected /plu/ral userproxy command for ordinary messages in DMs. Includes an editable command list and per-DM selection.",
+  "authors": [
+    {
+      "name": "Brigitte + ChatGPT",
+      "id": "0"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_commands"
+  },
+  "hash": "B4FCD4AFBD4AD22B025C52732446C5BDD290E7302472B18C991EA1149C16A122"
+}
