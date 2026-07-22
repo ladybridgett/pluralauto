@@ -5,9 +5,11 @@
   const React = metro.common.React;
   const RN = metro.common.ReactNative;
   const { View, Text, TextInput, Pressable, ScrollView, Switch } = RN;
+  const fallbackStorage =
+    globalThis.__pluralAutoFallbackStorage ||
+    (globalThis.__pluralAutoFallbackStorage = {});
   const storage =
-    vendetta.plugin?.storage ||
-    (globalThis.__pluralAutoFallbackStorage ||= {});
+    (vendetta.plugin && vendetta.plugin.storage) || fallbackStorage;
 
   const DEFAULT_LINES = "Default proxy | proxy | message";
   const CHANNEL_DISABLED = "__pluralauto_disabled__";
