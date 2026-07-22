@@ -3,7 +3,7 @@
   "description": "Automatically runs a selected /plu/ral userproxy command for ordinary messages in DMs. Includes an editable command list and per-DM selection.",
   "authors": [
     {
-      "name": "Brigitte + ChatGPT",
+      "name": "Brigitte",
       "id": "0"
     }
   ],
