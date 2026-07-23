@@ -1,18 +1,23 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.4.1";
+  var VERSION = "7.5.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
+  var receiveMessageActions = null;
   var channelStore = null;
   var selectedChannelStore = null;
+  var userStore = null;
   var commandIndexStore = null;
   var uploadAttachmentStore = null;
   var pendingReplyStore = null;
   var commandExecutor = null;
   var unpatch = null;
+  var receiveMessageUnpatch = null;
+  var directReplyRestore = null;
   var retryTimer = null;
+  var directReplyRetryTimer = null;
   var composerUnpatches = [];
   var composerRetryTimer = null;
   var composerOwnerName = "";
@@ -21,6 +26,7 @@
   var temporaryUnpatches = [];
   var applicationIconUtils = null;
   var proxyIconCache = {};
+  var proxyIdentityCache = {};
   var scannedApplications = [];
   var applicationScanPromise = null;
 
@@ -235,6 +241,12 @@
       "Detail: " + (storage.detail || "No details"),
       "Character selector: " +
         (storage.composerSelectorStatus || "Waiting"),
+      "Proxy message display: " +
+        (storage.localProxyStatus || "Waiting"),
+      "Proxy notifications: " +
+        (storage.proxyNotificationStatus || "Waiting"),
+      "Android notification replies: " +
+        (storage.notificationReplyStatus || "Waiting"),
       "Updated: " + (storage.updatedAt || "Unknown"),
       storage.lastError ? "Error:\n" + storage.lastError : "Error: none"
     ].join("\n");
@@ -245,7 +257,28 @@
     if (!metro) throw new Error("ShiggyCord's module API is unavailable.");
 
     if (!messageActions) {
-      messageActions = metro.findByProps("sendMessage");
+      try {
+        messageActions = metro.findByProps(
+          "sendMessage",
+          "receiveMessage"
+        );
+      } catch (ignored) {}
+      if (!messageActions) {
+        messageActions = metro.findByProps("sendMessage");
+      }
+    }
+
+    if (!receiveMessageActions) {
+      if (
+        messageActions &&
+        typeof messageActions.receiveMessage === "function"
+      ) {
+        receiveMessageActions = messageActions;
+      } else {
+        try {
+          receiveMessageActions = metro.findByProps("receiveMessage");
+        } catch (ignored2) {}
+      }
     }
 
     if (!channelStore && typeof metro.findByStoreName === "function") {
@@ -256,16 +289,22 @@
       channelStore = metro.findByProps("getChannel", "getDMFromUserId");
     }
 
+    if (!userStore && typeof metro.findByStoreName === "function") {
+      try {
+        userStore = metro.findByStoreName("UserStore");
+      } catch (ignored3) {}
+    }
+
     if (!uploadAttachmentStore && typeof metro.findByStoreName === "function") {
       try {
         uploadAttachmentStore = metro.findByStoreName("UploadAttachmentStore");
-      } catch (ignored) {}
+      } catch (ignored4) {}
     }
 
     if (!pendingReplyStore && typeof metro.findByStoreName === "function") {
       try {
         pendingReplyStore = metro.findByStoreName("PendingReplyStore");
-      } catch (ignored2) {}
+      } catch (ignored5) {}
     }
   }
 
@@ -287,11 +326,24 @@
   }
 
   function getChannel(channelId) {
+    var channel;
     resolveCore();
-    if (!channelStore || typeof channelStore.getChannel !== "function") {
-      return null;
+    if (channelStore && typeof channelStore.getChannel === "function") {
+      channel = channelStore.getChannel(channelId);
+      if (channel) return channel;
     }
-    return channelStore.getChannel(channelId);
+    if (
+      storage.channelCommands &&
+      normalise(storage.channelCommands[channelId]) &&
+      storage.disabledChannels[channelId] !== true
+    ) {
+      return {
+        id: String(channelId),
+        type: 1,
+        name: "Direct message"
+      };
+    }
+    return null;
   }
 
   function isWantedChannel(channelId) {
@@ -627,6 +679,63 @@
     return applicationIconUtils;
   }
 
+  function currentUser() {
+    try {
+      resolveCore();
+      if (userStore && typeof userStore.getCurrentUser === "function") {
+        return userStore.getCurrentUser();
+      }
+    } catch (ignored) {}
+    return null;
+  }
+
+  function mainAccountName() {
+    var user = currentUser();
+    if (!user) return "Main account";
+    return String(
+      user.globalName ||
+      user.global_name ||
+      user.displayName ||
+      user.display_name ||
+      user.username ||
+      "Main account"
+    );
+  }
+
+  function mainAccountInitial() {
+    var label = mainAccountName().replace(/^[\s@/]+/, "");
+    if (label === "Main account") return "ME";
+    return (label.charAt(0) || "ME").toUpperCase();
+  }
+
+  function mainAccountPictureSource() {
+    var user = currentUser();
+    var utilities;
+    var source;
+    if (!user) return null;
+    utilities = getApplicationIconUtils();
+    if (
+      utilities &&
+      typeof utilities.getUserAvatarSource === "function"
+    ) {
+      try {
+        source = utilities.getUserAvatarSource(user, false, 64);
+        if (source) return imageSource(source);
+      } catch (ignored) {}
+    }
+    if (user.id && user.avatar) {
+      return {
+        uri:
+          "https://cdn.discordapp.com/avatars/" +
+          encodeURIComponent(String(user.id)) +
+          "/" +
+          encodeURIComponent(String(user.avatar)) +
+          ".png?size=64"
+      };
+    }
+    return null;
+  }
+
   function commandApplicationPicture(command) {
     var section;
     var application;
@@ -758,6 +867,156 @@
     return null;
   }
 
+  function rememberProxyIdentity(proxy, command) {
+    var configuredApplicationId = String(
+      proxy && (proxy.applicationId || proxy.application_id) || ""
+    );
+    var applicationId = commandApplicationId(command);
+    var picture = commandApplicationPicture(command);
+    var bot = picture && picture.bot;
+
+    if (configuredApplicationId) {
+      proxyIdentityCache[configuredApplicationId] = true;
+    }
+    if (applicationId) proxyIdentityCache[String(applicationId)] = true;
+    if (picture && picture.id) {
+      proxyIdentityCache[String(picture.id)] = true;
+    }
+    if (bot && bot.id) proxyIdentityCache[String(bot.id)] = true;
+  }
+
+  function configuredProxyIdentityIds() {
+    var ids = {};
+    var entries = proxyEntries();
+    var cacheKeys = Object.keys(proxyIdentityCache);
+    var index;
+    var applicationId;
+    for (index = 0; index < entries.length; index += 1) {
+      applicationId = String(entries[index].applicationId || "");
+      if (applicationId) ids[applicationId] = true;
+    }
+    for (index = 0; index < cacheKeys.length; index += 1) {
+      ids[cacheKeys[index]] = true;
+    }
+    return ids;
+  }
+
+  function proxyMessageIdentityIds(message) {
+    var ids = [];
+    var interaction;
+    var metadata;
+    var application;
+    var author;
+
+    if (!message || typeof message !== "object") return ids;
+    interaction = message.interaction || {};
+    metadata =
+      message.interaction_metadata ||
+      message.interactionMetadata ||
+      {};
+    application = message.application || {};
+    author = message.author || {};
+
+    [
+      message.application_id,
+      message.applicationId,
+      application.id,
+      interaction.application_id,
+      interaction.applicationId,
+      metadata.application_id,
+      metadata.applicationId,
+      author.id
+    ].forEach(function (value) {
+      var id = String(value || "");
+      if (id && ids.indexOf(id) === -1) ids.push(id);
+    });
+    return ids;
+  }
+
+  function isConfiguredProxyMessage(message) {
+    var configured = configuredProxyIdentityIds();
+    var messageIds = proxyMessageIdentityIds(message);
+    var index;
+    for (index = 0; index < messageIds.length; index += 1) {
+      if (configured[messageIds[index]]) return true;
+    }
+    return false;
+  }
+
+  function localProxyMessage(message) {
+    var local;
+    if (!isConfiguredProxyMessage(message)) return message;
+    local = {};
+    Object.keys(message).forEach(function (key) {
+      local[key] = message[key];
+    });
+    delete local.interaction;
+    delete local.interaction_metadata;
+    delete local.interactionMetadata;
+    local.flags = (Number(message.flags) || 0) | 4096;
+    return local;
+  }
+
+  function clearProxyNotifications(channelId) {
+    var RN;
+    var nativeModules;
+    var manager;
+    try {
+      RN = metro && metro.common && metro.common.ReactNative;
+      nativeModules = RN && RN.NativeModules;
+      manager = nativeModules && nativeModules.DCDNotificationManager;
+      if (
+        manager &&
+        typeof manager.clearNotificationsForChannel === "function"
+      ) {
+        manager.clearNotificationsForChannel(String(channelId));
+      }
+    } catch (ignored) {}
+  }
+
+  function attachLocalProxyHandling() {
+    if (receiveMessageUnpatch) return true;
+    try {
+      resolveCore();
+      if (
+        !receiveMessageActions ||
+        typeof receiveMessageActions.receiveMessage !== "function"
+      ) {
+        storage.localProxyStatus = "Waiting for incoming messages.";
+        storage.proxyNotificationStatus =
+          "Waiting for incoming messages.";
+        return false;
+      }
+      receiveMessageUnpatch = vendetta.patcher.instead(
+        "receiveMessage",
+        receiveMessageActions,
+        function (args, original) {
+          var message = args[1];
+          var local = localProxyMessage(message);
+          var result;
+          if (local !== message) args[1] = local;
+          result = original.apply(null, args);
+          if (local !== message) {
+            setTimeout(function () {
+              clearProxyNotifications(args[0]);
+            }, 0);
+          }
+          return result;
+        }
+      );
+      storage.localProxyStatus =
+        "Ready (command decorations hidden locally).";
+      storage.proxyNotificationStatus =
+        "Ready (configured proxy messages suppressed).";
+      return true;
+    } catch (error) {
+      storage.localProxyStatus =
+        "Error: " + (error.message || String(error));
+      storage.proxyNotificationStatus = storage.localProxyStatus;
+      return false;
+    }
+  }
+
   function proxyIconKey(proxy, channelId) {
     return (
       String(channelId || "") +
@@ -792,6 +1051,7 @@
       proxy.applicationId || null
     )
       .then(function (command) {
+        rememberProxyIdentity(proxy, command);
         record.source = applicationPictureSource(command);
         record.promise = null;
         return record.source;
@@ -1457,6 +1717,7 @@
     var execution;
 
     if (!channel) return Promise.reject(new Error("The DM is unavailable."));
+    rememberProxyIdentity(null, command);
     if (String(content || "").length) {
       values[option.name] = [{ type: "text", text: String(content) }];
       args.push({
@@ -1642,7 +1903,7 @@
 
   function selectorInitial(proxy) {
     var label;
-    if (!proxy) return "ME";
+    if (!proxy) return mainAccountInitial();
     label = String(proxy.label || proxy.command || "?")
       .replace(/^[\s@/]+/, "");
     return (label.charAt(0) || "?").toUpperCase();
@@ -1931,6 +2192,8 @@
     var entries;
     var channel;
     var iconPromises;
+    var mainName;
+    var mainIcon;
 
     try {
       if (!channelId || !isWantedChannel(channelId)) {
@@ -1941,6 +2204,8 @@
       current = proxyForChannel(channelId);
       entries = proxyEntries();
       channel = getChannel(channelId);
+      mainName = mainAccountName();
+      mainIcon = mainAccountPictureSource();
       iconPromises = entries.map(function (entry) {
         return resolveProxyIcon(entry, channelId);
       });
@@ -1948,14 +2213,15 @@
         .then(function (icons) {
           var items = [{
             key: "main-account",
-            label: "Main account",
+            label: mainName + " (Main account)",
             main: true,
-            initial: "ME",
+            icon: mainIcon,
+            initial: mainAccountInitial(),
             selected: !current,
             onPress: function () {
               selectProxyForChannel(channelId, "");
               refreshSelector(refresh);
-              toast("PluralAuto: Main account selected.");
+              toast("PluralAuto: " + mainName + " selected.");
             }
           }];
           var index;
@@ -2032,10 +2298,11 @@
     var iconRecord;
     var iconSource;
     var badgeChild;
+    var mainIcon;
 
     if (!channelId || !isWantedChannel(channelId)) return null;
     proxy = proxyForChannel(channelId);
-    label = proxy ? String(proxy.label || proxy.command) : "Main account";
+    label = proxy ? String(proxy.label || proxy.command) : mainAccountName();
     iconKey = proxy ? proxyIconKey(proxy, channelId) : "";
     iconState = React.useState(null);
     iconRecord = iconState[0];
@@ -2047,6 +2314,8 @@
     ) {
       iconSource = iconRecord.source;
     }
+    mainIcon = proxy ? null : mainAccountPictureSource();
+    if (!proxy && mainIcon) iconSource = mainIcon;
 
     React.useEffect(function () {
       var active = true;
@@ -2063,7 +2332,7 @@
     Pressable = RN.TouchableOpacity || RN.Pressable;
     if (!Pressable || !RN.View || !RN.Text) return null;
     badgeChild =
-      proxy && iconSource && RN.Image
+      iconSource && RN.Image
         ? React.createElement(RN.Image, {
             source: iconSource,
             resizeMode: "cover",
@@ -2078,7 +2347,7 @@
             {
               style: {
                 color: "white",
-                fontSize: proxy ? 15 : 10,
+              fontSize: proxy ? 15 : 13,
                 fontWeight: "700"
               }
             },
@@ -2408,6 +2677,7 @@
             );
           }
           proxyCommand = command;
+          rememberProxyIdentity(selectedProxy, command);
           if (!replyTarget) return null;
           applicationId = commandApplicationId(command);
           if (!applicationId) {
@@ -2474,14 +2744,92 @@
     }
   }
 
+  function moduleRecordByFilePath(filePath) {
+    var modules;
+    var keys;
+    var index;
+    var record;
+    try {
+      resolveCore();
+      modules = metro && metro.modules;
+      if (!modules || typeof modules !== "object") return null;
+      keys = Object.keys(modules);
+      for (index = 0; index < keys.length; index += 1) {
+        record = modules[keys[index]];
+        if (
+          record &&
+          record.__filePath === filePath &&
+          record.isInitialized !== false
+        ) {
+          return record;
+        }
+      }
+    } catch (ignored) {}
+    return null;
+  }
+
+  function attachAndroidNotificationReplies() {
+    var filePath =
+      "modules/headless_tasks/android/DirectReply.tsx";
+    var record;
+    var publicModule;
+    var exportsValue;
+    var original;
+    var wrapper;
+    var defaultExport = false;
+
+    if (directReplyRestore) return true;
+    record = moduleRecordByFilePath(filePath);
+    publicModule = record && record.publicModule;
+    exportsValue = publicModule && publicModule.exports;
+    if (typeof exportsValue === "function") {
+      original = exportsValue;
+    } else if (
+      exportsValue &&
+      typeof exportsValue.default === "function"
+    ) {
+      original = exportsValue.default;
+      defaultExport = true;
+    }
+    if (!original) {
+      storage.notificationReplyStatus =
+        "Waiting for Discord's Android reply task.";
+      return false;
+    }
+
+    wrapper = function () {
+      if (!unpatch) attach();
+      storage.notificationReplyStatus =
+        "Ready (using the selected proxy for each DM).";
+      return original.apply(this, arguments);
+    };
+    if (defaultExport) exportsValue.default = wrapper;
+    else publicModule.exports = wrapper;
+    directReplyRestore = function () {
+      if (defaultExport) {
+        if (exportsValue.default === wrapper) {
+          exportsValue.default = original;
+        }
+      } else if (publicModule.exports === wrapper) {
+        publicModule.exports = original;
+      }
+      directReplyRestore = null;
+    };
+    storage.notificationReplyStatus =
+      "Ready (using the selected proxy for each DM).";
+    return true;
+  }
+
   function attach() {
     try {
       if (unpatch) {
+        attachLocalProxyHandling();
         setStatus("Ready", "Automatic DM proxying is attached.", null);
         return true;
       }
       resolveCore();
       if (!messageActions || typeof messageActions.sendMessage !== "function") {
+        attachLocalProxyHandling();
         setStatus("Waiting", "Discord's message module is not ready yet.", null);
         return false;
       }
@@ -2490,6 +2838,7 @@
         messageActions,
         intercept
       );
+      attachLocalProxyHandling();
       setStatus("Ready", "Automatic DM proxying is attached.", null);
       return true;
     } catch (error) {
@@ -2505,6 +2854,24 @@
       attach();
     } catch (error) {
       setStatus("Startup error", error.message || String(error), error);
+    }
+  }
+
+  function retryAndroidNotificationReplies() {
+    try {
+      if (directReplyRetryTimer) clearTimeout(directReplyRetryTimer);
+      directReplyRetryTimer = null;
+      if (!attachAndroidNotificationReplies()) {
+        directReplyRetryTimer = setTimeout(
+          retryAndroidNotificationReplies,
+          3000
+        );
+      }
+    } catch (ignored) {
+      directReplyRetryTimer = setTimeout(
+        retryAndroidNotificationReplies,
+        3000
+      );
     }
   }
 
@@ -2557,6 +2924,7 @@
     var channelId = null;
     var channel = null;
     var channelSelection = null;
+    var accountName = mainAccountName();
     var index;
 
     function invalidateProxyImages() {
@@ -3030,7 +3398,7 @@
         React.createElement(
           RN.Text,
           { style: { color: "white", fontWeight: "700" } },
-          "Main account"
+          accountName + " (Main account)"
         ),
         React.createElement(
           RN.Text,
@@ -3053,7 +3421,7 @@
 
     if (channelId && channel && (channel.type === 1 || channel.type === 3)) {
       children.push(button(
-        "Main account (no proxy)",
+        accountName + " (no proxy)",
         function () {
           delete storage.channelCommands[channelId];
           storage.disabledChannels[channelId] = true;
@@ -3116,6 +3484,12 @@
       if (!attachComposerSelector()) {
         composerRetryTimer = setTimeout(retryComposerSelector, 1500);
       }
+      if (!attachAndroidNotificationReplies()) {
+        directReplyRetryTimer = setTimeout(
+          retryAndroidNotificationReplies,
+          1500
+        );
+      }
     } catch (error) {
       try {
         setStatus("Startup error", error.message || String(error), error);
@@ -3134,21 +3508,36 @@
       composerRetryTimer = null;
     } catch (ignored2) {}
     try {
+      if (directReplyRetryTimer) clearTimeout(directReplyRetryTimer);
+      directReplyRetryTimer = null;
+    } catch (ignored3) {}
+    try {
       if (typeof unpatch === "function") unpatch();
       unpatch = null;
-    } catch (ignored3) {}
+    } catch (ignored4) {}
+    try {
+      if (typeof receiveMessageUnpatch === "function") {
+        receiveMessageUnpatch();
+      }
+      receiveMessageUnpatch = null;
+    } catch (ignored5) {}
+    try {
+      if (typeof directReplyRestore === "function") directReplyRestore();
+      directReplyRestore = null;
+    } catch (ignored6) {}
     while (composerUnpatches.length) {
       cleanup = composerUnpatches.pop();
-      try { cleanup(); } catch (ignored4) {}
+      try { cleanup(); } catch (ignored7) {}
     }
     composerOwnerName = "";
     composerOwnerSeenAt = 0;
     while (temporaryUnpatches.length) {
       cleanup = temporaryUnpatches.pop();
-      try { cleanup(); } catch (ignored5) {}
+      try { cleanup(); } catch (ignored8) {}
     }
     applicationIconUtils = null;
     proxyIconCache = {};
+    proxyIdentityCache = {};
     scannedApplications = [];
     applicationScanPromise = null;
     bypassNext = false;
