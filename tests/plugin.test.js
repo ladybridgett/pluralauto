@@ -521,8 +521,15 @@ function createV7Harness(options = {}) {
     dispatch: [],
     bridgedUploads: [],
     query: [],
+    composer: [],
+    actionSheets: [],
+    hiddenSheets: 0,
   };
   const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
+  const channels = {
+    [channel.id]: channel,
+    "guild-v7": { id: "guild-v7", type: 0, name: "Server channel" },
+  };
   if (!options.unconfigured && storage.channelCommands == null) {
     storage.channelCommands = { [channel.id]: "proxy" };
   }
@@ -554,6 +561,32 @@ function createV7Harness(options = {}) {
     type: 3,
     version: "1",
     options: [],
+  };
+  const ChatInputActions = {
+    type: {
+      displayName: options.composerVariant === "right"
+        ? "ChatInputRightActions"
+        : "ChatInputActions",
+      render(props) {
+        calls.composer.push({ ...props });
+        return {
+          type: "DiscordChatInputActions",
+          props: {},
+          children: ["Discord actions"],
+        };
+      },
+    },
+  };
+  const simpleActionSheet = {
+    showSimpleActionSheet(sheet) {
+      calls.actionSheets.push(sheet);
+    },
+  };
+  const actionSheetController = {
+    openLazy() {},
+    hideActionSheet() {
+      calls.hiddenSheets += 1;
+    },
   };
   let pendingReply = options.replyTarget
     ? { channel, message: { id: options.replyTarget } }
@@ -631,7 +664,8 @@ function createV7Harness(options = {}) {
           useState: () => [0, () => {}],
         },
         ReactNative: {
-          View() {}, Text() {}, TextInput() {}, Pressable() {}, ScrollView() {}, Switch() {},
+          View() {}, Text() {}, TextInput() {}, Pressable() {}, TouchableOpacity() {},
+          ScrollView() {}, Switch() {},
         },
         FluxDispatcher: {
           dispatch(action) {
@@ -655,7 +689,9 @@ function createV7Harness(options = {}) {
         },
       },
       findByStoreName(name) {
-        if (name === "ChannelStore") return { getChannel: () => channel };
+        if (name === "ChannelStore") {
+          return { getChannel: (channelId) => channels[channelId] || null };
+        }
         if (name === "SelectedChannelStore") return { getChannelId: () => channel.id };
         if (name === "UploadAttachmentStore") return uploadStore;
         if (name === "PendingReplyStore") return pendingReplyStore;
@@ -683,11 +719,15 @@ function createV7Harness(options = {}) {
       },
       findByProps(...props) {
         if (props.includes("sendMessage")) return MessageActions;
+        if (props.includes("showSimpleActionSheet")) return simpleActionSheet;
+        if (props.includes("openLazy") && props.includes("hideActionSheet")) {
+          return actionSheetController;
+        }
       },
       findByName() {},
       find(filter) {
-        const exports = { A: modernExecutor };
-        return filter(exports) ? exports : undefined;
+        const candidates = [ChatInputActions, { A: modernExecutor }];
+        return candidates.find((exports) => filter(exports));
       },
     },
     ui: { toasts: { showToast(message) { calls.toast.push(message); } } },
@@ -704,13 +744,24 @@ function createV7Harness(options = {}) {
     return MessageActions.sendMessage(channel.id, message, undefined, sendOptions);
   }
 
+  function renderComposerActions(props = {}) {
+    return ChatInputActions.type.render({
+      channel,
+      shouldShowGiftButton: true,
+      ...props,
+    }, { current: {} });
+  }
+
   return {
     calls,
     channel,
+    channels,
+    ChatInputActions,
     plugin,
     proxyCommand,
     replyCommand,
     send,
+    renderComposerActions,
     storage,
     uploadStore,
   };
@@ -906,10 +957,81 @@ test("v7 renders enabled reply and attachment settings", () => {
   assert.ok(tree);
   assert.match(JSON.stringify(tree), /Proxy selector - current DM/);
   assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
-  assert.equal(harness.storage.version, "7.1.0");
+  assert.equal(harness.storage.version, "7.2.0");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
+});
+
+test("v7 replaces the DM gift action with a native character selector", () => {
+  const harness = createV7Harness({
+    storage: {
+      commandLines: "Élise | proxy | message\nNoir | noir | message",
+      channelCommands: { "dm-v7": "proxy" },
+      disabledChannels: {},
+    },
+  });
+  const tree = harness.renderComposerActions();
+
+  assert.equal(harness.calls.composer.length, 1);
+  assert.equal(harness.calls.composer[0].shouldShowGiftButton, false);
+  assert.equal(harness.storage.composerSelectorStatus, "Ready (ChatInputActions)");
+  assert.equal(tree.children.length, 2);
+
+  const selectorElement = tree.children[1];
+  const selectorButton = selectorElement.type(selectorElement.props);
+  assert.match(selectorButton.props.accessibilityLabel, /Current: Élise/);
+  assert.equal(selectorButton.children[0].children[0].children[0], "É");
+
+  selectorButton.props.onPress();
+  assert.equal(harness.calls.actionSheets.length, 1);
+  const sheet = harness.calls.actionSheets[0];
+  assert.equal(sheet.header.title, "PluralAuto character");
+  assert.equal(
+    JSON.stringify(sheet.options.map((option) => option.label)),
+    JSON.stringify(["Main account", "✓ Élise  /proxy", "Noir  /noir"]),
+  );
+
+  sheet.options[2].onPress();
+  assert.equal(harness.storage.channelCommands[harness.channel.id], "noir");
+  assert.equal(harness.storage.disabledChannels[harness.channel.id], false);
+  assert.equal(harness.calls.hiddenSheets, 1);
+
+  const updatedTree = harness.renderComposerActions();
+  const updatedElement = updatedTree.children[1];
+  const updatedButton = updatedElement.type(updatedElement.props);
+  assert.match(updatedButton.props.accessibilityLabel, /Current: Noir/);
+  assert.equal(updatedButton.children[0].children[0].children[0], "N");
+
+  updatedButton.props.onPress();
+  const updatedSheet = harness.calls.actionSheets[1];
+  updatedSheet.options[0].onPress();
+  assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
+  assert.equal(harness.storage.disabledChannels[harness.channel.id], true);
+});
+
+test("v7 leaves the gift button unchanged outside DMs", () => {
+  const harness = createV7Harness();
+  const tree = harness.renderComposerActions({
+    channel: harness.channels["guild-v7"],
+    shouldShowGiftButton: true,
+  });
+
+  assert.equal(tree.type, "DiscordChatInputActions");
+  assert.equal(harness.calls.composer[0].shouldShowGiftButton, true);
+  assert.equal(harness.calls.actionSheets.length, 0);
+});
+
+test("v7 supports Discord's ChatInputRightActions composer variant", () => {
+  const harness = createV7Harness({ composerVariant: "right" });
+  const tree = harness.renderComposerActions();
+
+  assert.equal(
+    harness.storage.composerSelectorStatus,
+    "Ready (ChatInputRightActions)",
+  );
+  assert.equal(harness.calls.composer[0].shouldShowGiftButton, false);
+  assert.equal(tree.children.length, 2);
 });
 
 test("v7 settings selector configures and clears the current DM proxy", async () => {
