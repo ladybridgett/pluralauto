@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.0";
+  var VERSION = "7.6.1";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -29,6 +29,9 @@
   var bypassNext = false;
   var temporaryUnpatches = [];
   var applicationIconUtils = null;
+  var actionSheetController = null;
+  var actionSheetComponentModule = null;
+  var simpleActionSheetModule = null;
   var proxyIconCache = {};
   var proxyIdentityCache = {};
   var scannedApplications = [];
@@ -138,7 +141,13 @@
         (command ? "/" + command : "New proxy")
       ),
       command: command,
-      option: normalise(value.option || storage.messageOption) || "message"
+      option: normalise(value.option || storage.messageOption) || "message",
+      iconUri: String(
+        value.iconUri ||
+        value.icon_uri ||
+        (value.icon && value.icon.uri) ||
+        ""
+      )
     };
   }
 
@@ -1035,7 +1044,35 @@
 
   function cachedProxyIcon(proxy, channelId) {
     var record = proxyIconCache[proxyIconKey(proxy, channelId)];
-    return record && record.source ? record.source : null;
+    if (record && record.source) return record.source;
+    if (proxy && proxy.iconUri) {
+      return imageSource(String(proxy.iconUri));
+    }
+    return null;
+  }
+
+  function persistProxyIcon(proxy, source) {
+    var uri = source && source.uri ? String(source.uri) : "";
+    var proxies = storage.proxies;
+    var wantedId = proxySelectionKey(proxy);
+    var index;
+    var stored;
+    if (!uri || !Array.isArray(proxies)) return;
+    for (index = 0; index < proxies.length; index += 1) {
+      stored = normaliseStoredProxy(proxies[index], index);
+      if (
+        proxySelectionKey(stored) === wantedId ||
+        (
+          proxy &&
+          proxy.applicationId &&
+          stored.applicationId === String(proxy.applicationId) &&
+          stored.command === normalise(proxy.command)
+        )
+      ) {
+        proxies[index].iconUri = uri;
+        return;
+      }
+    }
   }
 
   function resolveProxyIcon(proxy, channelId) {
@@ -1044,6 +1081,9 @@
     var record;
 
     if (!proxy || !channelId) return Promise.resolve(null);
+    if (proxy.iconUri) {
+      return Promise.resolve(imageSource(String(proxy.iconUri)));
+    }
     key = proxyIconKey(proxy, channelId);
     cached = proxyIconCache[key];
     if (cached && cached.source) return Promise.resolve(cached.source);
@@ -1059,6 +1099,7 @@
       .then(function (command) {
         rememberProxyIdentity(proxy, command);
         record.source = applicationPictureSource(command);
+        persistProxyIcon(proxy, record.source);
         record.promise = null;
         return record.source;
       })
@@ -1915,6 +1956,48 @@
     return (label.charAt(0) || "?").toUpperCase();
   }
 
+  function getActionSheetController() {
+    if (actionSheetController) return actionSheetController;
+    try {
+      actionSheetController = metro.findByProps(
+        "openLazy",
+        "hideActionSheet"
+      );
+    } catch (ignored) {
+      actionSheetController = null;
+    }
+    return actionSheetController;
+  }
+
+  function getActionSheetComponentModule() {
+    if (actionSheetComponentModule) return actionSheetComponentModule;
+    try {
+      actionSheetComponentModule = metro.findByProps("ActionSheet");
+    } catch (ignored) {
+      actionSheetComponentModule = null;
+    }
+    return actionSheetComponentModule;
+  }
+
+  function getSimpleActionSheetModule() {
+    if (simpleActionSheetModule) return simpleActionSheetModule;
+    try {
+      simpleActionSheetModule = metro.findByProps(
+        "showSimpleActionSheet"
+      );
+    } catch (ignored) {
+      simpleActionSheetModule = null;
+    }
+    return simpleActionSheetModule;
+  }
+
+  function warmPickerModules() {
+    try { getApplicationIconUtils(); } catch (ignored) {}
+    try { getActionSheetController(); } catch (ignored2) {}
+    try { getActionSheetComponentModule(); } catch (ignored3) {}
+    try { getSimpleActionSheetModule(); } catch (ignored4) {}
+  }
+
   function ImageChoiceRow(props) {
     var React = metro.common.React;
     var RN = metro.common.ReactNative;
@@ -2038,7 +2121,7 @@
     var content;
 
     try {
-      actionSheetModule = metro.findByProps("ActionSheet");
+      actionSheetModule = getActionSheetComponentModule();
       ActionSheet = actionSheetModule && actionSheetModule.ActionSheet;
     } catch (ignored) {}
     try {
@@ -2156,7 +2239,7 @@
     var options;
     var index;
     try {
-      controller = metro.findByProps("openLazy", "hideActionSheet");
+      controller = getActionSheetController();
       if (controller && typeof controller.openLazy === "function") {
         controller.openLazy(
           Promise.resolve({ default: ImageChoiceSheet }),
@@ -2168,7 +2251,7 @@
     } catch (ignored) {}
 
     try {
-      sheetModule = metro.findByProps("showSimpleActionSheet");
+      sheetModule = getSimpleActionSheetModule();
       showSheet = sheetModule && sheetModule.showSimpleActionSheet;
       if (typeof showSheet !== "function") return false;
       options = [];
@@ -2202,7 +2285,7 @@
   function hideCharacterActionSheet(sheetKey) {
     var controller;
     try {
-      controller = metro.findByProps("openLazy", "hideActionSheet");
+      controller = getActionSheetController();
       if (
         controller &&
         typeof controller.hideActionSheet === "function"
@@ -2258,15 +2341,16 @@
       }];
 
       for (index = 0; index < entries.length; index += 1) {
-        (function (entry) {
+        (function (entry, rowIndex) {
           var app = scannedApplication(entry.applicationId);
+          var initialIcon =
+            cachedProxyIcon(entry, channelId) ||
+            (app && app.icon) ||
+            null;
           var item = {
             key: proxySelectionKey(entry),
             label: entry.label + "  /" + entry.command,
-            icon:
-              cachedProxyIcon(entry, channelId) ||
-              (app && app.icon) ||
-              null,
+            icon: initialIcon,
             initial: selectorInitial(entry),
             selected:
               Boolean(current) &&
@@ -2277,14 +2361,20 @@
               toast("PluralAuto: " + entry.label + " selected.");
             }
           };
+          if (initialIcon) persistProxyIcon(entry, initialIcon);
           item.loadIcon = function () {
-            return resolveProxyIcon(entry, channelId).then(function (source) {
-              if (source) item.icon = source;
+            return delay(120 + rowIndex * 90).then(function () {
+              return resolveProxyIcon(entry, channelId);
+            }).then(function (source) {
+              if (source) {
+                item.icon = source;
+                persistProxyIcon(entry, source);
+              }
               return source;
             });
           };
           items.push(item);
-        })(entries[index]);
+        })(entries[index], index);
       }
 
       if (!openImageChoiceSheet({
@@ -2299,13 +2389,6 @@
         return false;
       }
 
-      for (index = 0; index < items.length; index += 1) {
-        if (typeof items[index].loadIcon === "function") {
-          Promise.resolve().then(items[index].loadIcon).catch(
-            function () {}
-          );
-        }
-      }
       return true;
     } catch (error) {
       toast("PluralAuto could not open the character selector.");
@@ -3259,13 +3342,21 @@
             applicationId: app.applicationId,
             label: app.label,
             command: command,
-            option: normalise(storage.messageOption) || "message"
+            option: normalise(storage.messageOption) || "message",
+            iconUri:
+              app.icon && app.icon.uri
+                ? String(app.icon.uri)
+                : ""
           };
           storedProxies.push(proxy);
         } else {
           proxy = storedProxies[proxyIndex];
           proxy.applicationId = app.applicationId;
           proxy.label = app.label;
+          proxy.iconUri =
+            app.icon && app.icon.uri
+              ? String(app.icon.uri)
+              : "";
           if (!normalise(proxy.command)) proxy.command = command;
         }
         syncLegacyProxyLines();
@@ -3681,6 +3772,8 @@
   plugin.onLoad = function () {
     try {
       initialiseStorage();
+      resolveCore();
+      warmPickerModules();
       setStatus("Starting", "Attaching to outgoing messages.", null);
       if (!attach()) {
         retryTimer = setTimeout(retryAttach, 1500);
@@ -3754,6 +3847,9 @@
       try { cleanup(); } catch (ignored10) {}
     }
     applicationIconUtils = null;
+    actionSheetController = null;
+    actionSheetComponentModule = null;
+    simpleActionSheetModule = null;
     proxyIconCache = {};
     proxyIdentityCache = {};
     scannedApplications = [];
