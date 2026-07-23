@@ -1,4 +1,4 @@
-# PluralAuto v7.4.1
+# PluralAuto v7.5.0
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -8,9 +8,13 @@ It supports:
 - a scanned Discord-app proxy list with per-proxy command fields;
 - an explicit proxy selector for the current DM;
 - an app-PFP character selector that replaces Discord's gift button in DMs;
+- your signed-in Discord name and avatar on the Main account selector;
 - a one-message bypass;
 - automatic Discord replies through /plu/ral's `queue_for_reply` and `Reply` commands;
+- Android notification quick replies through the proxy selected for that DM;
 - attachment-only and text-plus-attachment messages, with up to 10 files;
+- locally hidden “used command” decorations on your proxy responses;
+- suppressed and cleared local notifications for your configured proxies;
 - optional group-DM support;
 - persistent settings; and
 - fail-closed behavior, so a command error does not leak an unproxied message unless you deliberately enable that fallback.
@@ -43,13 +47,17 @@ Existing line-based configurations from v7.3 and earlier are migrated into the l
 
 Open a DM, return to the plugin settings, then use **Proxy selector - current DM** to choose its proxy. Choose **Main account (no proxy)** to clear that DM's proxy. Every unconfigured DM sends through your main account by default.
 
-In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between **Main account** and any configured proxy. PluralAuto gets each character's profile picture from Discord's cached application-command data and shows the full-color, untinted image in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an app has no available icon, the badge falls back to the character's first letter; the main account uses `ME`. Server-channel gift buttons are left unchanged.
+In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between your main account and any configured proxy. The main-account row uses your signed-in Discord display name and avatar. PluralAuto gets each character's profile picture from Discord's cached application-command data and shows the full-color, untinted image in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an avatar is unavailable, the badge falls back to the account or character's first letter. Server-channel gift buttons are left unchanged.
 
 If PluralAuto says it cannot find a command, open that slash command from Discord's command picker once in the affected DM. This lets Discord cache the command locally.
 
 Replies and attachments are enabled by default and can be switched off separately in settings. /plu/ral supports up to 10 attachments in one proxied message. PluralAuto handles Discord's cleared-draft `attachmentsToUpload` send path, including attachment-only messages. Stickers bypass PluralAuto and are sent normally.
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
+
+Android's inline **Reply** action uses the same per-DM selection as the composer. PluralAuto reattaches its outgoing-message hook before Discord's Android direct-reply task runs, including when Discord's channel cache is still warming up.
+
+When one of your configured proxy apps answers, PluralAuto removes the interaction metadata from the local copy so Discord does not show the “used command” decoration on your side. It also sets Discord's local suppress-notifications flag and clears a delivered Android notification for that DM. Discord may still briefly create a system notification if Android receives the push while Discord and ShiggyCord are fully stopped; an external plugin cannot run before that native cold-start notification is created.
 
 ## Privacy behavior
 
