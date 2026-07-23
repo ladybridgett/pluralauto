@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.2 • Visible send spinner, first-open switcher speed fix, and persistent PFP cache.",
+  "description": "Version 7.6.3 • Instant send-button spinner without the pressed-square delay.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "415172befece04fad244d79a4b9a45a5421709c4c7eadfc159fa7366ad4b98bf"
+  "hash": "fc6b10ca304fcd68f09646e300836a8e5a7aa75dffa5bfe3481bf5c0cb42751c"
 }
