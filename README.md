@@ -1,4 +1,4 @@
-# PluralAuto v7.6.1
+# PluralAuto v7.6.2
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -56,7 +56,7 @@ If PluralAuto says it cannot find a command, open that slash command from Discor
 
 Replies and attachments are enabled by default and can be switched off separately in settings. /plu/ral supports up to 10 attachments in one proxied message. PluralAuto handles Discord's cleared-draft `attachmentsToUpload` send path, including attachment-only messages. Stickers bypass PluralAuto and are sent normally.
 
-While a proxied message, reply, or attachment is being processed, Discord's normal send button is replaced by a loading spinner for that DM. The regular button returns as soon as the proxy operation succeeds or fails.
+While a proxied message, reply, or attachment is being processed, Discord's normal send button is replaced by a loading spinner for that DM. The spinner stays visible for at least 0.85 seconds, so Android has time to paint it even when Discord dispatches the proxy command immediately; longer operations keep it visible until they finish.
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
 
