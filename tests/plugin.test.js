@@ -640,6 +640,13 @@ function createV7Harness(options = {}) {
             ) {
               outgoingUploads = [];
             }
+            if (
+              action.type === "UPLOAD_ATTACHMENT_SET_UPLOADS"
+              && action.channelId === channel.id
+              && action.draftType === 0
+            ) {
+              outgoingUploads = action.uploads.slice();
+            }
             if (action.type === "DELETE_PENDING_REPLY") pendingReply = null;
           },
         },
@@ -663,7 +670,10 @@ function createV7Harness(options = {}) {
                       : [replyCommand],
                 };
               }
-              return { loading: false, commands: [proxyCommand] };
+              return {
+                loading: false,
+                commands: options.proxyCommandMissing ? [] : [proxyCommand],
+              };
             },
           };
         }
@@ -724,8 +734,11 @@ test("v7 evaluates without touching ShiggyCord APIs", () => {
 
 test("v7 proxies attachment-only messages through /plu/ral attachment slots", async () => {
   const upload = { id: "camera-file", filename: "photo.png" };
-  const harness = createV7Harness({ uploads: [upload] });
-  const result = await harness.send({ content: "", attachments: [upload] });
+  const harness = createV7Harness();
+  const result = await harness.send(
+    { content: "", attachments: [] },
+    { attachmentsToUpload: [upload] },
+  );
 
   assert.equal(result.ok, true);
   assert.equal(harness.calls.executor.length, 1);
@@ -763,8 +776,11 @@ test("v7 combines replies and attachments", async () => {
     { id: "file-a", filename: "a.png" },
     { id: "file-b", filename: "b.txt" },
   ];
-  const harness = createV7Harness({ replyTarget: "target-with-files", uploads });
-  const result = await harness.send({ content: "files", attachments: uploads });
+  const harness = createV7Harness({ replyTarget: "target-with-files" });
+  const result = await harness.send(
+    { content: "files", attachments: [] },
+    { attachmentsToUpload: uploads },
+  );
 
   assert.equal(result.ok, true);
   assert.equal(harness.calls.executor.length, 2);
@@ -818,7 +834,6 @@ test("v7 never falls back to an unproxied send after a reply was queued", async 
 test("v7 restores normal sending when reply and attachment proxying are disabled", async () => {
   const upload = { id: "normal-file" };
   const attachmentHarness = createV7Harness({
-    uploads: [upload],
     storage: { proxyAttachments: false },
   });
   const replyHarness = createV7Harness({
@@ -826,16 +841,40 @@ test("v7 restores normal sending when reply and attachment proxying are disabled
     storage: { proxyReplies: false },
   });
 
-  const attachmentResult = await attachmentHarness.send({
-    content: "normal attachment",
-    attachments: [upload],
-  });
+  const attachmentOptions = { attachmentsToUpload: [upload] };
+  const attachmentResult = await attachmentHarness.send(
+    { content: "normal attachment", attachments: [] },
+    attachmentOptions,
+  );
   const replyResult = await replyHarness.send({ content: "normal reply", attachments: [] });
 
   assert.equal(attachmentResult.original, true);
   assert.equal(replyResult.original, true);
   assert.equal(attachmentHarness.calls.executor.length, 0);
   assert.equal(replyHarness.calls.executor.length, 0);
+  assert.equal(
+    attachmentHarness.calls.original[0][3].attachmentsToUpload[0],
+    upload,
+  );
+});
+
+test("v7 restores Discord-cleared attachment drafts when proxy lookup fails", async () => {
+  const upload = { id: "retry-file", filename: "retry.png" };
+  const harness = createV7Harness({ proxyCommandMissing: true });
+  const result = await harness.send(
+    { content: "keep this file", attachments: [] },
+    { attachmentsToUpload: [upload] },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.calls.original.length, 0);
+  assert.ok(harness.calls.dispatch.some((action) => (
+    action.type === "UPLOAD_ATTACHMENT_SET_UPLOADS"
+    && action.channelId === harness.channel.id
+    && action.draftType === 0
+  )));
+  assert.equal(harness.uploadStore.getUploads(harness.channel.id, 0)[0], upload);
 });
 
 test("v7 renders enabled reply and attachment settings", () => {
@@ -843,7 +882,7 @@ test("v7 renders enabled reply and attachment settings", () => {
   const tree = harness.plugin.settings();
 
   assert.ok(tree);
-  assert.equal(harness.storage.version, "7.0.1");
+  assert.equal(harness.storage.version, "7.0.2");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
 });
