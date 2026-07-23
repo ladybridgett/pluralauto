@@ -1,4 +1,4 @@
-# PluralAuto v7.5.0
+# PluralAuto v7.6.0
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -7,7 +7,9 @@ It supports:
 - main-account sending by default in every unconfigured DM;
 - a scanned Discord-app proxy list with per-proxy command fields;
 - an explicit proxy selector for the current DM;
-- an app-PFP character selector that replaces Discord's gift button in DMs;
+- an instant-opening app-PFP character selector that replaces Discord's gift button in DMs;
+- asynchronous PFP loading, so uncached icons never block the selector;
+- a loading spinner on Discord's send button while a proxy command runs;
 - your signed-in Discord name and avatar on the Main account selector;
 - a one-message bypass;
 - automatic Discord replies through /plu/ral's `queue_for_reply` and `Reply` commands;
@@ -47,11 +49,13 @@ Existing line-based configurations from v7.3 and earlier are migrated into the l
 
 Open a DM, return to the plugin settings, then use **Proxy selector - current DM** to choose its proxy. Choose **Main account (no proxy)** to clear that DM's proxy. Every unconfigured DM sends through your main account by default.
 
-In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between your main account and any configured proxy. The main-account row uses your signed-in Discord display name and avatar. PluralAuto gets each character's profile picture from Discord's cached application-command data and shows the full-color, untinted image in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an avatar is unavailable, the badge falls back to the account or character's first letter. Server-channel gift buttons are left unchanged.
+In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between your main account and any configured proxy. The picker opens immediately with cached PFPs or initials; any uncached application PFPs fill in asynchronously without delaying the menu. The main-account row uses your signed-in Discord display name and avatar. PluralAuto shows full-color, untinted images in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an avatar is unavailable, the badge falls back to the account or character's first letter. Server-channel gift buttons are left unchanged.
 
 If PluralAuto says it cannot find a command, open that slash command from Discord's command picker once in the affected DM. This lets Discord cache the command locally.
 
 Replies and attachments are enabled by default and can be switched off separately in settings. /plu/ral supports up to 10 attachments in one proxied message. PluralAuto handles Discord's cleared-draft `attachmentsToUpload` send path, including attachment-only messages. Stickers bypass PluralAuto and are sent normally.
+
+While a proxied message, reply, or attachment is being processed, Discord's normal send button is replaced by a loading spinner for that DM. The regular button returns as soon as the proxy operation succeeds or fails.
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
 
