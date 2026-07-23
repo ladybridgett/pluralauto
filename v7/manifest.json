@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.4.0 • Add proxies from scanned Discord apps and edit them in a list.",
+  "description": "Version 7.4.1 • Full-color app PFPs in proxy and character pickers.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "4436e79295c7eee6022623154315e8e168fafc6cf1471b941ca5205e81f042d8"
+  "hash": "7dd9a4767fbc68423486e8ea99a0fbac563225d027dbe92ba3f9adaddb37f6b8"
 }
