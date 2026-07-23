@@ -523,6 +523,9 @@ function createV7Harness(options = {}) {
     query: [],
   };
   const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
+  if (!options.unconfigured && storage.channelCommands == null) {
+    storage.channelCommands = { [channel.id]: "proxy" };
+  }
   const applicationId = "plural-userproxy-app";
   const proxyOptions = [
     { name: "message", type: 3 },
@@ -732,6 +735,25 @@ test("v7 evaluates without touching ShiggyCord APIs", () => {
   assert.equal(typeof plugin.settings, "function");
 });
 
+test("v7 sends an unconfigured DM through the main account after upgrading", async () => {
+  const harness = createV7Harness({
+    unconfigured: true,
+    storage: {
+      version: "7.0.2",
+      defaultCommand: "proxy",
+      commandLines: "Élise | proxy | message",
+      channelCommands: {},
+      disabledChannels: {},
+    },
+  });
+  const result = await harness.send({ content: "normal DM", attachments: [] });
+
+  assert.equal(result.original, true);
+  assert.equal(harness.calls.original.length, 1);
+  assert.equal(harness.calls.executor.length, 0);
+  assert.equal(harness.storage.defaultCommand, "");
+});
+
 test("v7 proxies attachment-only messages through /plu/ral attachment slots", async () => {
   const upload = { id: "camera-file", filename: "photo.png" };
   const harness = createV7Harness();
@@ -882,7 +904,63 @@ test("v7 renders enabled reply and attachment settings", () => {
   const tree = harness.plugin.settings();
 
   assert.ok(tree);
-  assert.equal(harness.storage.version, "7.0.2");
+  assert.match(JSON.stringify(tree), /Proxy selector - current DM/);
+  assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
+  assert.equal(harness.storage.version, "7.1.0");
+  assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
+});
+
+test("v7 settings selector configures and clears the current DM proxy", async () => {
+  const harness = createV7Harness({
+    unconfigured: true,
+    storage: {
+      commandLines: "Élise | proxy | message",
+      channelCommands: {},
+      disabledChannels: {},
+    },
+  });
+
+  function nodeText(node) {
+    if (typeof node === "string") return node;
+    if (!node || typeof node !== "object" || !Array.isArray(node.children)) {
+      return "";
+    }
+    return node.children.map(nodeText).join("");
+  }
+
+  function findButton(node, text) {
+    if (!node || typeof node !== "object") return null;
+    if (node.props && typeof node.props.onPress === "function" && nodeText(node) === text) {
+      return node;
+    }
+    if (!Array.isArray(node.children)) return null;
+    for (const child of node.children) {
+      const found = findButton(child, text);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  let tree = harness.plugin.settings();
+  const proxyButton = findButton(tree, "Élise  /proxy");
+  assert.ok(proxyButton);
+  proxyButton.props.onPress();
+  assert.equal(harness.storage.channelCommands[harness.channel.id], "proxy");
+  assert.equal(harness.storage.disabledChannels[harness.channel.id], false);
+
+  const proxied = await harness.send({ content: "selected", attachments: [] });
+  assert.equal(proxied.ok, true);
+  assert.equal(harness.calls.executor.length, 1);
+
+  tree = harness.plugin.settings();
+  const mainButton = findButton(tree, "Main account (no proxy)");
+  assert.ok(mainButton);
+  mainButton.props.onPress();
+  assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
+  assert.equal(harness.storage.disabledChannels[harness.channel.id], true);
+
+  const normal = await harness.send({ content: "cleared", attachments: [] });
+  assert.equal(normal.original, true);
 });
