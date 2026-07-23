@@ -520,6 +520,7 @@ function createV7Harness(options = {}) {
     toast: [],
     dispatch: [],
     bridgedUploads: [],
+    query: [],
   };
   const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
   const applicationId = "plural-userproxy-app";
@@ -545,8 +546,8 @@ function createV7Harness(options = {}) {
   const replyCommand = {
     id: "reply-v7",
     applicationId,
-    name: "Reply",
-    untranslatedName: "Reply",
+    name: options.replyCommandName || "Reply (Élise)",
+    untranslatedName: options.replyCommandName || "Reply (Élise)",
     type: 3,
     version: "1",
     options: [],
@@ -650,11 +651,16 @@ function createV7Harness(options = {}) {
         if (name === "PendingReplyStore") return pendingReplyStore;
         if (name === "ApplicationCommandIndexStore") {
           return {
-            query(_context, query) {
+            query(_context, query, queryOptions) {
+              calls.query.push({ query, queryOptions });
               if (query.commandTypes.includes(3)) {
                 return {
                   loading: false,
-                  commands: options.replyCommandMissing ? [] : [replyCommand],
+                  commands:
+                    options.replyCommandMissing
+                    || queryOptions.applicationId !== applicationId
+                      ? []
+                      : [replyCommand],
                 };
               }
               return { loading: false, commands: [proxyCommand] };
@@ -742,8 +748,12 @@ test("v7 queues and sends Discord replies through the matching Reply command", a
     JSON.stringify(harness.calls.executor[0].optionValues.queue_for_reply),
     JSON.stringify([{ type: "text", text: "true" }]),
   );
-  assert.equal(harness.calls.executor[1].command.name, "Reply");
+  assert.equal(harness.calls.executor[1].command.name, "Reply (Élise)");
   assert.equal(harness.calls.executor[1].commandTargetId, "target-message-42");
+  assert.ok(harness.calls.query.some(({ query, queryOptions }) => (
+    query.commandTypes.includes(3)
+    && queryOptions.applicationId === "plural-userproxy-app"
+  )));
   assert.ok(harness.calls.dispatch.some((action) => action.type === "DELETE_PENDING_REPLY"));
   assert.equal(harness.calls.original.length, 0);
 });
@@ -762,6 +772,19 @@ test("v7 combines replies and attachments", async () => {
   assert.ok(harness.calls.executor[0].optionValues.attachment1);
   assert.deepEqual(harness.calls.bridgedUploads, uploads);
   assert.equal(harness.calls.executor[1].commandTargetId, "target-with-files");
+});
+
+test("v7 also supports the unsuffixed Reply command setting", async () => {
+  const harness = createV7Harness({
+    replyTarget: "target-unsuffixed",
+    replyCommandName: "Reply",
+  });
+  const result = await harness.send({ content: "plain Reply name", attachments: [] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor.length, 2);
+  assert.equal(harness.calls.executor[1].command.name, "Reply");
+  assert.equal(harness.calls.executor[1].commandTargetId, "target-unsuffixed");
 });
 
 test("v7 fails before queueing when the Reply context command is unavailable", async () => {
@@ -820,7 +843,7 @@ test("v7 renders enabled reply and attachment settings", () => {
   const tree = harness.plugin.settings();
 
   assert.ok(tree);
-  assert.equal(harness.storage.version, "7.0.0");
+  assert.equal(harness.storage.version, "7.0.1");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
 });
