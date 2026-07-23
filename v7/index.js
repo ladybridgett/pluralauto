@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.0.0";
+  var VERSION = "7.0.1";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -236,7 +236,14 @@
     } catch (ignored) {}
   }
 
-  function queryCommandIndex(channel, wanted, commandType, output, seen) {
+  function queryCommandIndex(
+    channel,
+    wanted,
+    commandType,
+    applicationId,
+    output,
+    seen
+  ) {
     var result;
     var context;
 
@@ -264,7 +271,8 @@
           },
           {
             allowFetch: true,
-            allowApplicationState: true
+            allowApplicationState: true,
+            applicationId: applicationId || undefined
           }
         );
         addSource(result, output, seen);
@@ -369,8 +377,16 @@
     var type;
     var app;
     for (index = 0; index < commands.length; index += 1) {
-      if (commandName(commands[index]) !== wanted) continue;
       type = commandTypeOf(commands[index]);
+      if (
+        commandName(commands[index]) !== wanted &&
+        !(
+          commandType === 3 &&
+          commandName(commands[index]).indexOf(wanted + " (") === 0
+        )
+      ) {
+        continue;
+      }
       if (commandType != null && type != null && type !== commandType) {
         continue;
       }
@@ -410,6 +426,7 @@
       channel,
       wanted,
       commandType,
+      applicationId,
       commands,
       seen
     );
