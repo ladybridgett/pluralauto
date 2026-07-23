@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.1";
+  var VERSION = "7.6.2";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -22,6 +22,7 @@
   var composerRetryTimer = null;
   var sendButtonUnpatch = null;
   var sendButtonRetryTimer = null;
+  var MINIMUM_SEND_SPINNER_MS = 850;
   var composerOwnerName = "";
   var composerOwnerSeenAt = 0;
   var sendingChannels = {};
@@ -2523,10 +2524,10 @@
 
   function beginChannelSending(channelId) {
     var key = String(channelId || "");
+    var startedAt = Date.now();
     var finished = false;
-    sendingChannels[key] = Number(sendingChannels[key] || 0) + 1;
-    notifySendingListeners(key);
-    return function () {
+    var finishScheduled = false;
+    function finishNow() {
       if (finished) return;
       finished = true;
       sendingChannels[key] = Math.max(
@@ -2535,6 +2536,23 @@
       );
       if (!sendingChannels[key]) delete sendingChannels[key];
       notifySendingListeners(key);
+    }
+    sendingChannels[key] = Number(sendingChannels[key] || 0) + 1;
+    notifySendingListeners(key);
+    return function () {
+      var remaining;
+      if (finished || finishScheduled) return;
+      remaining =
+        MINIMUM_SEND_SPINNER_MS - (Date.now() - startedAt);
+      if (remaining > 0) {
+        finishScheduled = true;
+        setTimeout(function () {
+          finishScheduled = false;
+          finishNow();
+        }, remaining);
+        return;
+      }
+      finishNow();
     };
   }
 
