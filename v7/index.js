@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.0.1";
+  var VERSION = "7.0.2";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -592,9 +592,32 @@
     return null;
   }
 
-  function getOutgoingUploads(channelId, message) {
+  function uploadsFromOptions(value) {
+    if (!value || typeof value !== "object") return [];
+    if (Array.isArray(value.attachmentsToUpload)) {
+      return value.attachmentsToUpload.slice();
+    }
+    if (Array.isArray(value.attachments_to_upload)) {
+      return value.attachments_to_upload.slice();
+    }
+    if (
+      value.messageSendOptions &&
+      typeof value.messageSendOptions === "object"
+    ) {
+      return uploadsFromOptions(value.messageSendOptions);
+    }
+    return [];
+  }
+
+  function getOutgoingUploads(channelId, message, args) {
     var uploads;
+    var index;
     resolveCore();
+
+    for (index = 2; index < args.length; index += 1) {
+      uploads = uploadsFromOptions(args[index]);
+      if (uploads.length) return uploads;
+    }
 
     try {
       if (
@@ -696,6 +719,22 @@
         dispatcher.dispatch({
           type: "UPLOAD_ATTACHMENT_CLEAR_ALL_FILES",
           channelId: channelId,
+          draftType: 0
+        });
+      }
+    } catch (ignored) {}
+  }
+
+  function restoreOutgoingUploads(channelId, uploads) {
+    var dispatcher;
+    if (!uploads || !uploads.length) return;
+    try {
+      dispatcher = metro && metro.common && metro.common.FluxDispatcher;
+      if (dispatcher && typeof dispatcher.dispatch === "function") {
+        dispatcher.dispatch({
+          type: "UPLOAD_ATTACHMENT_SET_UPLOADS",
+          channelId: channelId,
+          uploads: uploads,
           draftType: 0
         });
       }
@@ -1039,7 +1078,7 @@
       if (!selectedProxy) return original.apply(null, args);
       selectedCommand = selectedProxy.command;
       content = String(message.content || "");
-      uploads = getOutgoingUploads(channelId, message);
+      uploads = getOutgoingUploads(channelId, message, args);
       replyTarget = pendingReplyTarget(channelId, args, message);
 
       if (!content.replace(/\s/g, "") && !uploads.length) {
@@ -1107,6 +1146,13 @@
           return { ok: true, pluralAuto: true };
         })
         .catch(function (error) {
+          if (
+            uploads.length &&
+            !queuedForReply &&
+            storage.sendNormallyOnError !== true
+          ) {
+            restoreOutgoingUploads(channelId, uploads);
+          }
           if (queuedForReply) {
             if (!error || typeof error !== "object") {
               error = new Error(String(error || "Automatic Reply failed."));
