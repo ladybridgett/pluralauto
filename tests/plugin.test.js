@@ -67,7 +67,7 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
-test("v7 manifest hash matches its replies-and-attachments bundle", () => {
+test("v7 manifest hash matches its app-PFP selector bundle", () => {
   const root = path.join(__dirname, "..", "v7");
   const source = fs.readFileSync(path.join(root, "index.js"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -523,6 +523,7 @@ function createV7Harness(options = {}) {
     query: [],
     composer: [],
     actionSheets: [],
+    applicationIcons: [],
     hiddenSheets: 0,
   };
   const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
@@ -552,6 +553,32 @@ function createV7Harness(options = {}) {
     options: options.missingQueue
       ? proxyOptions.filter((option) => option.name !== "queue_for_reply")
       : proxyOptions,
+    section: {
+      id: applicationId,
+      name: "Élise",
+      icon: options.missingApplicationIcon ? null : "elise-app-icon",
+      application: {
+        id: applicationId,
+        icon: options.missingApplicationIcon ? null : "elise-app-icon",
+      },
+    },
+  };
+  const noirApplicationId = "noir-userproxy-app";
+  const noirCommand = {
+    ...proxyCommand,
+    id: "noir-v7",
+    applicationId: noirApplicationId,
+    name: "noir",
+    untranslatedName: "noir",
+    section: {
+      id: noirApplicationId,
+      name: "Noir",
+      icon: options.missingApplicationIcon ? null : "noir-app-icon",
+      application: {
+        id: noirApplicationId,
+        icon: options.missingApplicationIcon ? null : "noir-app-icon",
+      },
+    },
   };
   const replyCommand = {
     id: "reply-v7",
@@ -586,6 +613,18 @@ function createV7Harness(options = {}) {
     openLazy() {},
     hideActionSheet() {
       calls.hiddenSheets += 1;
+    },
+  };
+  const applicationIconUtils = {
+    getApplicationIconSource(picture) {
+      calls.applicationIcons.push(picture);
+      if (!picture.icon) return null;
+      return {
+        uri: `discord-app://${picture.id}/${picture.icon}`,
+      };
+    },
+    getUserAvatarSource() {
+      return null;
     },
   };
   let pendingReply = options.replyTarget
@@ -661,11 +700,19 @@ function createV7Harness(options = {}) {
           createElement(type, props, ...children) {
             return { type, props: props || {}, children };
           },
-          useState: () => [0, () => {}],
+          useState(initial) {
+            return [
+              typeof initial === "function" ? initial() : initial,
+              () => {},
+            ];
+          },
+          useEffect(effect) {
+            effect();
+          },
         },
         ReactNative: {
           View() {}, Text() {}, TextInput() {}, Pressable() {}, TouchableOpacity() {},
-          ScrollView() {}, Switch() {},
+          ScrollView() {}, Switch() {}, Image() {},
         },
         FluxDispatcher: {
           dispatch(action) {
@@ -711,7 +758,9 @@ function createV7Harness(options = {}) {
               }
               return {
                 loading: false,
-                commands: options.proxyCommandMissing ? [] : [proxyCommand],
+                commands: options.proxyCommandMissing
+                  ? []
+                  : [query.text === "noir" ? noirCommand : proxyCommand],
               };
             },
           };
@@ -720,6 +769,9 @@ function createV7Harness(options = {}) {
       findByProps(...props) {
         if (props.includes("sendMessage")) return MessageActions;
         if (props.includes("showSimpleActionSheet")) return simpleActionSheet;
+        if (props.includes("getApplicationIconSource")) {
+          return applicationIconUtils;
+        }
         if (props.includes("openLazy") && props.includes("hideActionSheet")) {
           return actionSheetController;
         }
@@ -758,6 +810,7 @@ function createV7Harness(options = {}) {
     channels,
     ChatInputActions,
     plugin,
+    noirCommand,
     proxyCommand,
     replyCommand,
     send,
@@ -957,13 +1010,13 @@ test("v7 renders enabled reply and attachment settings", () => {
   assert.ok(tree);
   assert.match(JSON.stringify(tree), /Proxy selector - current DM/);
   assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
-  assert.equal(harness.storage.version, "7.2.0");
+  assert.equal(harness.storage.version, "7.3.0");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
 });
 
-test("v7 replaces the DM gift action with a native character selector", () => {
+test("v7 replaces the DM gift action with an app-PFP character selector", async () => {
   const harness = createV7Harness({
     storage: {
       commandLines: "Élise | proxy | message\nNoir | noir | message",
@@ -984,12 +1037,36 @@ test("v7 replaces the DM gift action with a native character selector", () => {
   assert.equal(selectorButton.children[0].children[0].children[0], "É");
 
   selectorButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.calls.actionSheets.length, 1);
   const sheet = harness.calls.actionSheets[0];
   assert.equal(sheet.header.title, "PluralAuto character");
   assert.equal(
     JSON.stringify(sheet.options.map((option) => option.label)),
     JSON.stringify(["Main account", "✓ Élise  /proxy", "Noir  /noir"]),
+  );
+  assert.equal(
+    sheet.options[1].icon.uri,
+    "discord-app://plural-userproxy-app/elise-app-icon",
+  );
+  assert.equal(
+    sheet.options[2].icon.uri,
+    "discord-app://noir-userproxy-app/noir-app-icon",
+  );
+  assert.deepEqual(
+    harness.calls.applicationIcons.map(({ id, icon }) => ({ id, icon })),
+    [
+      { id: "plural-userproxy-app", icon: "elise-app-icon" },
+      { id: "noir-userproxy-app", icon: "noir-app-icon" },
+    ],
+  );
+
+  const loadedTree = harness.renderComposerActions();
+  const loadedElement = loadedTree.children[1];
+  const loadedButton = loadedElement.type(loadedElement.props);
+  assert.equal(
+    loadedButton.children[0].children[0].props.source.uri,
+    "discord-app://plural-userproxy-app/elise-app-icon",
   );
 
   sheet.options[2].onPress();
@@ -1001,13 +1078,43 @@ test("v7 replaces the DM gift action with a native character selector", () => {
   const updatedElement = updatedTree.children[1];
   const updatedButton = updatedElement.type(updatedElement.props);
   assert.match(updatedButton.props.accessibilityLabel, /Current: Noir/);
-  assert.equal(updatedButton.children[0].children[0].children[0], "N");
+  assert.equal(
+    updatedButton.children[0].children[0].props.source.uri,
+    "discord-app://noir-userproxy-app/noir-app-icon",
+  );
 
   updatedButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
   const updatedSheet = harness.calls.actionSheets[1];
   updatedSheet.options[0].onPress();
   assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
   assert.equal(harness.storage.disabledChannels[harness.channel.id], true);
+});
+
+test("v7 keeps initials when an application has no profile picture", async () => {
+  const harness = createV7Harness({
+    missingApplicationIcon: true,
+    storage: {
+      commandLines: "Élise | proxy | message",
+      channelCommands: { "dm-v7": "proxy" },
+      disabledChannels: {},
+    },
+  });
+  const tree = harness.renderComposerActions();
+  const selectorElement = tree.children[1];
+  const selectorButton = selectorElement.type(selectorElement.props);
+
+  assert.equal(selectorButton.children[0].children[0].children[0], "É");
+  selectorButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.calls.actionSheets.length, 1);
+  assert.equal("icon" in harness.calls.actionSheets[0].options[1], false);
+  const rerendered = harness.renderComposerActions();
+  const rerenderedButton = rerendered.children[1].type(
+    rerendered.children[1].props,
+  );
+  assert.equal(rerenderedButton.children[0].children[0].children[0], "É");
 });
 
 test("v7 leaves the gift button unchanged outside DMs", () => {
