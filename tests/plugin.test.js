@@ -67,7 +67,7 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
-test("v7 manifest hash matches its untinted image-picker bundle", () => {
+test("v7 manifest hash matches its profile and notification bundle", () => {
   const root = path.join(__dirname, "..", "v7");
   const source = fs.readFileSync(path.join(root, "index.js"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -525,6 +525,9 @@ function createV7Harness(options = {}) {
     actionSheets: [],
     lazySheets: [],
     applicationIcons: [],
+    received: [],
+    notificationClears: [],
+    directReplyTasks: [],
     hiddenSheets: 0,
     hiddenSheetKeys: [],
   };
@@ -631,9 +634,17 @@ function createV7Harness(options = {}) {
         uri: `discord-app://${picture.id}/${picture.icon}`,
       };
     },
-    getUserAvatarSource() {
-      return null;
+    getUserAvatarSource(user) {
+      return {
+        uri: `discord-user://${user.id}/${user.avatar}`,
+      };
     },
+  };
+  const currentUser = {
+    id: "current-user",
+    username: "brigitte",
+    globalName: "Brigitte",
+    avatar: "brigitte-avatar",
   };
   let pendingReply = options.replyTarget
     ? { channel, message: { id: options.replyTarget } }
@@ -659,6 +670,32 @@ function createV7Harness(options = {}) {
     sendMessage(...args) {
       calls.original.push(args);
       return { original: true };
+    },
+    receiveMessage(...args) {
+      calls.received.push(args);
+      return args[1];
+    },
+  };
+  const directReplyRecord = {
+    __filePath: "modules/headless_tasks/android/DirectReply.tsx",
+    isInitialized: true,
+    publicModule: {
+      exports(payload) {
+        calls.directReplyTasks.push(payload);
+        return MessageActions.sendMessage(
+          payload.channelId,
+          {
+            content: payload.channelReplyText,
+            attachments: [],
+            stickerIds: [],
+          },
+          false,
+          {
+            eagerDispatch: false,
+            location: "PUSH_NOTIFICATION",
+          },
+        );
+      },
     },
   };
 
@@ -726,6 +763,13 @@ function createV7Harness(options = {}) {
               return { width: 400, height: 800 };
             },
           },
+          NativeModules: {
+            DCDNotificationManager: {
+              clearNotificationsForChannel(channelId) {
+                calls.notificationClears.push(channelId);
+              },
+            },
+          },
         },
         FluxDispatcher: {
           dispatch(action) {
@@ -750,7 +794,19 @@ function createV7Harness(options = {}) {
       },
       findByStoreName(name) {
         if (name === "ChannelStore") {
-          return { getChannel: (channelId) => channels[channelId] || null };
+          return {
+            getChannel: (channelId) => (
+              options.channelUnavailable
+                ? null
+                : channels[channelId] || null
+            ),
+          };
+        }
+        if (name === "UserStore") {
+          return {
+            getCurrentUser: () => currentUser,
+            getUser: () => null,
+          };
         }
         if (name === "SelectedChannelStore") return { getChannelId: () => channel.id };
         if (name === "UploadAttachmentStore") return uploadStore;
@@ -818,6 +874,9 @@ function createV7Harness(options = {}) {
         const candidates = [ChatInputActions, { A: modernExecutor }];
         return candidates.find((exports) => filter(exports));
       },
+      modules: {
+        directReply: directReplyRecord,
+      },
     },
     ui: { toasts: { showToast(message) { calls.toast.push(message); } } },
     logger: { error() {} },
@@ -841,6 +900,18 @@ function createV7Harness(options = {}) {
     }, { current: {} });
   }
 
+  function receive(message, channelId = channel.id) {
+    return MessageActions.receiveMessage(channelId, message);
+  }
+
+  function directReply(payload = {}) {
+    return directReplyRecord.publicModule.exports({
+      channelId: channel.id,
+      channelReplyText: "notification reply",
+      ...payload,
+    });
+  }
+
   return {
     calls,
     channel,
@@ -849,6 +920,9 @@ function createV7Harness(options = {}) {
     plugin,
     noirCommand,
     proxyCommand,
+    currentUser,
+    directReply,
+    receive,
     replyCommand,
     send,
     renderComposerActions,
@@ -1062,10 +1136,10 @@ test("v7 renders enabled reply and attachment settings", () => {
 
   assert.ok(tree);
   assert.match(JSON.stringify(tree), /Proxy selector - current DM/);
-  assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
+  assert.match(JSON.stringify(tree), /Brigitte \(no proxy\)/);
   assert.match(JSON.stringify(tree), /\+ Add proxy/);
   assert.doesNotMatch(JSON.stringify(tree), /One per line/);
-  assert.equal(harness.storage.version, "7.4.1");
+  assert.equal(harness.storage.version, "7.5.0");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
@@ -1217,6 +1291,82 @@ test("v7 resolves a listed proxy inside its selected application", async () => {
   )));
 });
 
+test("v7 hides local command decorations and suppresses its proxy notifications", async () => {
+  const harness = createV7Harness({
+    storage: {
+      commandLines: "",
+      proxies: [{
+        id: "elise-proxy",
+        applicationId: "plural-userproxy-app",
+        label: "Élise",
+        command: "proxy",
+        option: "message",
+      }],
+      channelCommands: { "dm-v7": "elise-proxy" },
+      disabledChannels: {},
+    },
+  });
+  const incoming = {
+    id: "proxy-response",
+    application_id: "plural-userproxy-app",
+    author: { id: "plural-userproxy-bot" },
+    content: "proxied text",
+    flags: 0,
+    interaction: { name: "proxy" },
+    interaction_metadata: {
+      application_id: "plural-userproxy-app",
+    },
+  };
+  const received = harness.receive(incoming);
+
+  assert.equal(received.content, "proxied text");
+  assert.equal("interaction" in received, false);
+  assert.equal("interaction_metadata" in received, false);
+  assert.equal(received.flags & 4096, 4096);
+  assert.equal(incoming.flags, 0);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.calls.notificationClears, ["dm-v7"]);
+  assert.match(harness.storage.localProxyStatus, /Ready/);
+  assert.match(harness.storage.proxyNotificationStatus, /Ready/);
+
+  const unrelated = {
+    id: "other-app",
+    application_id: "different-app",
+    interaction: { name: "other" },
+    flags: 0,
+  };
+  assert.equal(harness.receive(unrelated), unrelated);
+});
+
+test("v7 routes Android notification replies through the DM's selected proxy", async () => {
+  const harness = createV7Harness({
+    channelUnavailable: true,
+    storage: {
+      commandLines: "",
+      proxies: [{
+        id: "elise-proxy",
+        applicationId: "plural-userproxy-app",
+        label: "Élise",
+        command: "proxy",
+        option: "message",
+      }],
+      channelCommands: { "dm-v7": "elise-proxy" },
+      disabledChannels: {},
+    },
+  });
+  const result = await harness.directReply();
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.directReplyTasks.length, 1);
+  assert.equal(harness.calls.executor.length, 1);
+  assert.equal(
+    harness.calls.executor[0].optionValues.message[0].text,
+    "notification reply",
+  );
+  assert.equal(harness.calls.original.length, 0);
+  assert.match(harness.storage.notificationReplyStatus, /Ready/);
+});
+
 test("v7 replaces the DM gift action with an app-PFP character selector", async () => {
   const harness = createV7Harness({
     storage: {
@@ -1246,7 +1396,15 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
   assert.equal(sheet.props.title, "PluralAuto character");
   assert.equal(
     JSON.stringify(sheet.props.items.map((item) => item.label)),
-    JSON.stringify(["Main account", "Élise  /proxy", "Noir  /noir"]),
+    JSON.stringify([
+      "Brigitte (Main account)",
+      "Élise  /proxy",
+      "Noir  /noir",
+    ]),
+  );
+  assert.equal(
+    sheet.props.items[0].icon.uri,
+    "discord-user://current-user/brigitte-avatar",
   );
   assert.equal(sheet.props.items[1].selected, true);
   assert.equal(
@@ -1313,6 +1471,37 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
   updatedSheet.props.items[0].onPress();
   assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
   assert.equal(harness.storage.disabledChannels[harness.channel.id], true);
+});
+
+test("v7 shows the signed-in account's name and avatar for main-account sending", async () => {
+  const harness = createV7Harness({
+    unconfigured: true,
+    storage: {
+      commandLines: "Élise | proxy | message",
+      channelCommands: {},
+      disabledChannels: {},
+    },
+  });
+  const tree = harness.renderComposerActions();
+  const selectorElement = tree.children[1];
+  const selectorButton = selectorElement.type(selectorElement.props);
+
+  assert.match(selectorButton.props.accessibilityLabel, /Current: Brigitte/);
+  assert.equal(
+    selectorButton.children[0].children[0].props.source.uri,
+    "discord-user://current-user/brigitte-avatar",
+  );
+
+  selectorButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
+  const sheet = harness.calls.lazySheets[0];
+  assert.equal(sheet.props.items[0].label, "Brigitte (Main account)");
+  assert.equal(
+    sheet.props.items[0].icon.uri,
+    "discord-user://current-user/brigitte-avatar",
+  );
+  assert.equal(sheet.props.items[0].selected, true);
+  assert.match(JSON.stringify(harness.plugin.settings()), /Brigitte \(Main account\)/);
 });
 
 test("v7 keeps initials when an application has no profile picture", async () => {
@@ -1426,7 +1615,7 @@ test("v7 settings selector configures and clears the current DM proxy", async ()
   assert.equal(harness.calls.executor.length, 1);
 
   tree = harness.plugin.settings();
-  const mainButton = findButton(tree, "Main account (no proxy)");
+  const mainButton = findButton(tree, "Brigitte (no proxy)");
   assert.ok(mainButton);
   mainButton.props.onPress();
   assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
