@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.2.0";
+  var VERSION = "7.3.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -19,6 +19,8 @@
   var composerOwnerSeenAt = 0;
   var bypassNext = false;
   var temporaryUnpatches = [];
+  var applicationIconUtils = null;
+  var proxyIconCache = {};
 
   function textError(error) {
     if (!error) return "Unknown error";
@@ -480,6 +482,192 @@
         ).command;
       });
     });
+  }
+
+  function imageSource(value) {
+    if (!value) return null;
+    if (typeof value === "string") return { uri: value };
+    return value;
+  }
+
+  function getApplicationIconUtils() {
+    if (applicationIconUtils) return applicationIconUtils;
+    try {
+      applicationIconUtils = metro.findByProps(
+        "getApplicationIconSource"
+      );
+    } catch (ignored) {
+      applicationIconUtils = null;
+    }
+    return applicationIconUtils;
+  }
+
+  function commandApplicationPicture(command) {
+    var section;
+    var application;
+    var bot;
+    var botStore;
+    var applicationId;
+    var icon;
+
+    if (!command || typeof command !== "object") return null;
+    section =
+      command.section ||
+      (command.rootCommand && command.rootCommand.section) ||
+      {};
+    application =
+      section.application ||
+      command.application ||
+      (command.rootCommand && command.rootCommand.application) ||
+      {};
+    applicationId =
+      commandApplicationId(command) ||
+      application.id ||
+      section.id ||
+      "";
+    icon =
+      section.icon ||
+      application.icon ||
+      command.applicationIcon ||
+      command.application_icon ||
+      (command.rootCommand &&
+        (command.rootCommand.applicationIcon ||
+          command.rootCommand.application_icon ||
+          command.rootCommand.icon)) ||
+      null;
+    bot =
+      application.bot ||
+      section.bot ||
+      command.bot ||
+      (command.rootCommand && command.rootCommand.bot) ||
+      null;
+
+    if (!bot && section.botId) {
+      try {
+        if (typeof metro.findByStoreName === "function") {
+          botStore = metro.findByStoreName("UserStore");
+        }
+        if (
+          botStore &&
+          typeof botStore.getUser === "function"
+        ) {
+          bot = botStore.getUser(section.botId);
+        }
+      } catch (ignored) {}
+    }
+
+    if (!applicationId || (!icon && !bot)) return null;
+    return {
+      id: String(applicationId),
+      icon: icon,
+      bot: bot
+    };
+  }
+
+  function applicationPictureSource(command) {
+    var picture = commandApplicationPicture(command);
+    var utilities;
+    var source;
+    var iconText;
+
+    if (!picture) return null;
+    if (picture.icon && typeof picture.icon === "object") {
+      return imageSource(picture.icon);
+    }
+
+    utilities = getApplicationIconUtils();
+    if (
+      utilities &&
+      typeof utilities.getApplicationIconSource === "function"
+    ) {
+      try {
+        source = utilities.getApplicationIconSource({
+          id: picture.id,
+          icon: picture.icon,
+          size: 64,
+          bot: picture.bot,
+          botIconFirst: false,
+          fallbackAvatar: false
+        });
+        if (source) return imageSource(source);
+      } catch (ignored) {}
+    }
+
+    if (picture.icon) {
+      iconText = String(picture.icon);
+      if (/^(?:data:|https?:)/i.test(iconText)) {
+        return { uri: iconText };
+      }
+      return {
+        uri:
+          "https://cdn.discordapp.com/app-icons/" +
+          encodeURIComponent(picture.id) +
+          "/" +
+          encodeURIComponent(iconText) +
+          ".png?size=64"
+      };
+    }
+
+    if (
+      picture.bot &&
+      utilities &&
+      typeof utilities.getUserAvatarSource === "function"
+    ) {
+      try {
+        return imageSource(
+          utilities.getUserAvatarSource(picture.bot, false, 64)
+        );
+      } catch (ignored2) {}
+    }
+
+    if (picture.bot && picture.bot.id && picture.bot.avatar) {
+      return {
+        uri:
+          "https://cdn.discordapp.com/avatars/" +
+          encodeURIComponent(String(picture.bot.id)) +
+          "/" +
+          encodeURIComponent(String(picture.bot.avatar)) +
+          ".png?size=64"
+      };
+    }
+    return null;
+  }
+
+  function proxyIconKey(proxy, channelId) {
+    return String(channelId || "") + ":" + normalise(
+      proxy && proxy.command
+    );
+  }
+
+  function cachedProxyIcon(proxy, channelId) {
+    var record = proxyIconCache[proxyIconKey(proxy, channelId)];
+    return record && record.source ? record.source : null;
+  }
+
+  function resolveProxyIcon(proxy, channelId) {
+    var key;
+    var cached;
+    var record;
+
+    if (!proxy || !channelId) return Promise.resolve(null);
+    key = proxyIconKey(proxy, channelId);
+    cached = proxyIconCache[key];
+    if (cached && cached.source) return Promise.resolve(cached.source);
+    if (cached && cached.promise) return cached.promise;
+
+    record = { source: null, promise: null };
+    record.promise = findCommand(proxy.command, channelId, 1, null)
+      .then(function (command) {
+        record.source = applicationPictureSource(command);
+        record.promise = null;
+        return record.source;
+      })
+      .catch(function () {
+        if (proxyIconCache[key] === record) delete proxyIconCache[key];
+        return null;
+      });
+    proxyIconCache[key] = record;
+    return record.promise;
   }
 
   function executorIn(value, depth, seen) {
@@ -1030,9 +1218,8 @@
     var showSheet;
     var current;
     var entries;
-    var options;
     var channel;
-    var index;
+    var iconPromises;
 
     try {
       if (!channelId || !isWantedChannel(channelId)) {
@@ -1048,46 +1235,70 @@
 
       current = proxyForChannel(channelId);
       entries = parseProxyLines(storage.commandLines);
-      options = [{
-        label: (current ? "" : "✓ ") + "Main account",
-        onPress: function () {
-          selectProxyForChannel(channelId, "");
-          refreshSelector(refresh);
-          hideCharacterActionSheet();
-          toast("PluralAuto: Main account selected.");
-        }
-      }];
-
-      for (index = 0; index < entries.length; index += 1) {
-        (function (entry) {
-          options.push({
-            label:
-              (current && current.command === entry.command ? "✓ " : "") +
-              entry.label +
-              "  /" +
-              entry.command,
+      channel = getChannel(channelId);
+      iconPromises = entries.map(function (entry) {
+        return resolveProxyIcon(entry, channelId);
+      });
+      Promise.all(iconPromises)
+        .then(function (icons) {
+          var options = [{
+            label: (current ? "" : "✓ ") + "Main account",
             onPress: function () {
-              selectProxyForChannel(channelId, entry.command);
+              selectProxyForChannel(channelId, "");
               refreshSelector(refresh);
               hideCharacterActionSheet();
-              toast("PluralAuto: " + entry.label + " selected.");
+              toast("PluralAuto: Main account selected.");
             }
-          });
-        })(entries[index]);
-      }
+          }];
+          var index;
+          var option;
 
-      channel = getChannel(channelId);
-      showSheet({
-        key: "CardOverflow",
-        header: {
-          title: "PluralAuto character",
-          subtitle: channel && channel.name
-            ? String(channel.name)
-            : "Current DM",
-          onClose: hideCharacterActionSheet
-        },
-        options: options
-      });
+          for (index = 0; index < entries.length; index += 1) {
+            (function (entry, icon) {
+              option = {
+                label:
+                  (current && current.command === entry.command ? "✓ " : "") +
+                  entry.label +
+                  "  /" +
+                  entry.command,
+                onPress: function () {
+                  selectProxyForChannel(channelId, entry.command);
+                  refreshSelector(refresh);
+                  hideCharacterActionSheet();
+                  toast("PluralAuto: " + entry.label + " selected.");
+                }
+              };
+              if (icon) option.icon = icon;
+              options.push(option);
+            })(entries[index], icons[index]);
+          }
+
+          showSheet({
+            key: "CardOverflow",
+            header: {
+              title: "PluralAuto character",
+              subtitle: channel && channel.name
+                ? String(channel.name)
+                : "Current DM",
+              onClose: hideCharacterActionSheet
+            },
+            options: options
+          });
+        })
+        .catch(function (error) {
+          toast("PluralAuto could not load the character selector.");
+          try {
+            if (
+              vendetta.logger &&
+              typeof vendetta.logger.error === "function"
+            ) {
+              vendetta.logger.error(
+                "PluralAuto character selector",
+                error
+              );
+            }
+          } catch (ignored) {}
+        });
       return true;
     } catch (error) {
       toast("PluralAuto could not open the character selector.");
@@ -1111,12 +1322,63 @@
     var proxy;
     var label;
     var Pressable;
+    var iconKey;
+    var iconState;
+    var iconRecord;
+    var iconSource;
+    var badgeChild;
 
     if (!channelId || !isWantedChannel(channelId)) return null;
     proxy = proxyForChannel(channelId);
     label = proxy ? String(proxy.label || proxy.command) : "Main account";
+    iconKey = proxy ? proxyIconKey(proxy, channelId) : "";
+    iconState = React.useState(null);
+    iconRecord = iconState[0];
+    iconSource = proxy ? cachedProxyIcon(proxy, channelId) : null;
+    if (
+      !iconSource &&
+      iconRecord &&
+      iconRecord.key === iconKey
+    ) {
+      iconSource = iconRecord.source;
+    }
+
+    React.useEffect(function () {
+      var active = true;
+      if (!proxy) {
+        iconState[1]({ key: "", source: null });
+        return function () { active = false; };
+      }
+      resolveProxyIcon(proxy, channelId).then(function (source) {
+        if (active) iconState[1]({ key: iconKey, source: source });
+      });
+      return function () { active = false; };
+    }, [channelId, iconKey]);
+
     Pressable = RN.TouchableOpacity || RN.Pressable;
     if (!Pressable || !RN.View || !RN.Text) return null;
+    badgeChild =
+      proxy && iconSource && RN.Image
+        ? React.createElement(RN.Image, {
+            source: iconSource,
+            resizeMode: "cover",
+            style: {
+              width: 30,
+              height: 30,
+              borderRadius: 15
+            }
+          })
+        : React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "white",
+                fontSize: proxy ? 15 : 10,
+                fontWeight: "700"
+              }
+            },
+            selectorInitial(proxy)
+          );
 
     return React.createElement(
       Pressable,
@@ -1143,20 +1405,11 @@
             borderRadius: 15,
             alignItems: "center",
             justifyContent: "center",
+            overflow: "hidden",
             backgroundColor: proxy ? "#5865f2" : "#4e5058"
           }
         },
-        React.createElement(
-          RN.Text,
-          {
-            style: {
-              color: "white",
-              fontSize: proxy ? 15 : 10,
-              fontWeight: "700"
-            }
-          },
-          selectorInitial(proxy)
-        )
+        badgeChild
       )
     );
   }
@@ -1938,6 +2191,8 @@
       cleanup = temporaryUnpatches.pop();
       try { cleanup(); } catch (ignored5) {}
     }
+    applicationIconUtils = null;
+    proxyIconCache = {};
     bypassNext = false;
   };
 
