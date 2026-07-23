@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.0.2";
+  var VERSION = "7.1.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -42,12 +42,10 @@
       : {};
 
     if (storage.enabled == null) storage.enabled = true;
-    if (storage.defaultCommand == null) storage.defaultCommand = "proxy";
     if (storage.messageOption == null) storage.messageOption = "message";
     if (storage.commandLines == null) {
       storage.commandLines =
-        "Default proxy | " +
-        normalise(storage.defaultCommand || "proxy") +
+        "Proxy | proxy" +
         " | " +
         normalise(storage.messageOption || "message");
     }
@@ -57,6 +55,7 @@
     if (storage.sendNormallyOnError == null) storage.sendNormallyOnError = false;
     if (storage.channelCommands == null) storage.channelCommands = {};
     if (storage.disabledChannels == null) storage.disabledChannels = {};
+    storage.defaultCommand = "";
     storage.version = VERSION;
   }
 
@@ -943,7 +942,7 @@
     var index;
 
     if (storage.disabledChannels[channelId] === true) return null;
-    selected = storage.channelCommands[channelId] || storage.defaultCommand;
+    selected = storage.channelCommands[channelId];
     wanted = normalise(selected);
     if (!wanted) return null;
 
@@ -1468,33 +1467,25 @@
       "fail-open"
     ));
 
-    children.push(label("Default proxy", "default-label"));
-    children.push(button(
-      "No default proxy",
-      function () {
-        storage.defaultCommand = "";
-        refresh();
-      },
-      !normalise(storage.defaultCommand),
-      false,
-      "default-none"
-    ));
-    for (index = 0; index < entries.length; index += 1) {
-      (function (entry) {
-        children.push(button(
-          entry.label + "  /" + entry.command,
-          function () {
-            storage.defaultCommand = entry.command;
-            refresh();
-          },
-          normalise(storage.defaultCommand) === entry.command,
-          false,
-          "default-" + entry.command
-        ));
-      })(entries[index]);
-    }
+    children.push(label("Unconfigured DMs", "default-label"));
+    children.push(
+      React.createElement(
+        RN.View,
+        { key: "default-main-account", style: style.card },
+        React.createElement(
+          RN.Text,
+          { style: { color: "white", fontWeight: "700" } },
+          "Main account"
+        ),
+        React.createElement(
+          RN.Text,
+          { style: style.muted },
+          "PluralAuto only proxies DMs that you select below."
+        )
+      )
+    );
 
-    children.push(label("Current DM", "current-label"));
+    children.push(label("Proxy selector - current DM", "current-label"));
     children.push(
       React.createElement(
         RN.Text,
@@ -1507,26 +1498,16 @@
 
     if (channelId && channel && (channel.type === 1 || channel.type === 3)) {
       children.push(button(
-        "Use the default proxy",
+        "Main account (no proxy)",
         function () {
           delete storage.channelCommands[channelId];
-          storage.disabledChannels[channelId] = false;
-          refresh();
-        },
-        channelSelection == null &&
-          storage.disabledChannels[channelId] !== true,
-        false,
-        "channel-default"
-      ));
-      children.push(button(
-        "Disable proxying in this DM",
-        function () {
           storage.disabledChannels[channelId] = true;
           refresh();
         },
-        storage.disabledChannels[channelId] === true,
-        true,
-        "channel-off"
+        storage.disabledChannels[channelId] === true ||
+          !normalise(channelSelection),
+        false,
+        "channel-main-account"
       ));
       for (index = 0; index < entries.length; index += 1) {
         (function (entry) {
