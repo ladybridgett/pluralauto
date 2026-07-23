@@ -67,7 +67,7 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
-test("v7 manifest hash matches its scanned-app proxy-list bundle", () => {
+test("v7 manifest hash matches its untinted image-picker bundle", () => {
   const root = path.join(__dirname, "..", "v7");
   const source = fs.readFileSync(path.join(root, "index.js"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -523,8 +523,10 @@ function createV7Harness(options = {}) {
     query: [],
     composer: [],
     actionSheets: [],
+    lazySheets: [],
     applicationIcons: [],
     hiddenSheets: 0,
+    hiddenSheetKeys: [],
   };
   const channel = { id: "dm-v7", type: 1, name: "Replies DM" };
   const channels = {
@@ -610,10 +612,16 @@ function createV7Harness(options = {}) {
     },
   };
   const actionSheetController = {
-    openLazy() {},
-    hideActionSheet() {
-      calls.hiddenSheets += 1;
+    openLazy(component, key, props) {
+      calls.lazySheets.push({ component, key, props });
     },
+    hideActionSheet(key) {
+      calls.hiddenSheets += 1;
+      calls.hiddenSheetKeys.push(key);
+    },
+  };
+  const actionSheetModule = {
+    ActionSheet() {},
   };
   const applicationIconUtils = {
     getApplicationIconSource(picture) {
@@ -713,6 +721,11 @@ function createV7Harness(options = {}) {
         ReactNative: {
           View() {}, Text() {}, TextInput() {}, Pressable() {}, TouchableOpacity() {},
           ScrollView() {}, Switch() {}, Image() {},
+          Dimensions: {
+            get() {
+              return { width: 400, height: 800 };
+            },
+          },
         },
         FluxDispatcher: {
           dispatch(action) {
@@ -798,6 +811,7 @@ function createV7Harness(options = {}) {
         if (props.includes("openLazy") && props.includes("hideActionSheet")) {
           return actionSheetController;
         }
+        if (props.includes("ActionSheet")) return actionSheetModule;
       },
       findByName() {},
       find(filter) {
@@ -841,6 +855,22 @@ function createV7Harness(options = {}) {
     storage,
     uploadStore,
   };
+}
+
+async function renderLazySheet(entry) {
+  const module = await entry.component;
+  return module.default(entry.props);
+}
+
+function findReactNode(node, predicate) {
+  if (!node || typeof node !== "object") return null;
+  if (predicate(node)) return node;
+  if (!Array.isArray(node.children)) return null;
+  for (const child of node.children) {
+    const found = findReactNode(child, predicate);
+    if (found) return found;
+  }
+  return null;
 }
 
 test("v7 evaluates without touching ShiggyCord APIs", () => {
@@ -1035,7 +1065,7 @@ test("v7 renders enabled reply and attachment settings", () => {
   assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
   assert.match(JSON.stringify(tree), /\+ Add proxy/);
   assert.doesNotMatch(JSON.stringify(tree), /One per line/);
-  assert.equal(harness.storage.version, "7.4.0");
+  assert.equal(harness.storage.version, "7.4.1");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
@@ -1082,19 +1112,38 @@ test("v7 scans added apps and manages proxies through the new list UI", async ()
   addButton.props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(harness.calls.actionSheets.length, 1);
-  const appSheet = harness.calls.actionSheets[0];
-  assert.equal(appSheet.header.title, "Choose an added app");
+  assert.equal(harness.calls.lazySheets.length, 1);
+  assert.equal(harness.calls.actionSheets.length, 0);
+  const appSheet = harness.calls.lazySheets[0];
+  assert.equal(appSheet.key, "PluralAutoAppPicker");
+  assert.equal(appSheet.props.title, "Choose an added app");
   assert.equal(
-    JSON.stringify(appSheet.options.map((option) => option.label)),
+    JSON.stringify(appSheet.props.items.map((item) => item.label)),
     JSON.stringify(["Élise", "Noir"]),
   );
   assert.equal(
-    appSheet.options[0].icon.uri,
+    appSheet.props.items[0].icon.uri,
     "discord-app://plural-userproxy-app/elise-app-icon",
   );
 
-  appSheet.options[0].onPress();
+  const renderedAppSheet = await renderLazySheet(appSheet);
+  const eliseRow = findReactNode(
+    renderedAppSheet,
+    (node) => node.props && node.props.accessibilityLabel === "Élise",
+  );
+  const eliseImage = findReactNode(
+    eliseRow,
+    (node) => node.props
+      && node.props.source
+      && node.props.source.uri
+        === "discord-app://plural-userproxy-app/elise-app-icon",
+  );
+  assert.ok(eliseRow);
+  assert.ok(eliseImage);
+  assert.equal(eliseImage.props.style.borderRadius, 21);
+  assert.equal("tintColor" in eliseImage.props.style, false);
+
+  eliseRow.props.onPress();
   assert.equal(harness.storage.proxies.length, 1);
   assert.equal(
     harness.storage.proxies[0].applicationId,
@@ -1124,8 +1173,8 @@ test("v7 scans added apps and manages proxies through the new list UI", async ()
   assert.ok(appButton);
   appButton.props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
-  const changeSheet = harness.calls.actionSheets[1];
-  changeSheet.options[1].onPress();
+  const changeSheet = harness.calls.lazySheets[1];
+  changeSheet.props.items[1].onPress();
   assert.equal(harness.storage.proxies[0].applicationId, "noir-userproxy-app");
   assert.equal(harness.storage.proxies[0].label, "Noir");
   assert.equal(harness.storage.proxies[0].command, "elise");
@@ -1190,19 +1239,22 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
 
   selectorButton.props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.calls.actionSheets.length, 1);
-  const sheet = harness.calls.actionSheets[0];
-  assert.equal(sheet.header.title, "PluralAuto character");
+  assert.equal(harness.calls.lazySheets.length, 1);
+  assert.equal(harness.calls.actionSheets.length, 0);
+  const sheet = harness.calls.lazySheets[0];
+  assert.equal(sheet.key, "PluralAutoCharacterPicker");
+  assert.equal(sheet.props.title, "PluralAuto character");
   assert.equal(
-    JSON.stringify(sheet.options.map((option) => option.label)),
-    JSON.stringify(["Main account", "✓ Élise  /proxy", "Noir  /noir"]),
+    JSON.stringify(sheet.props.items.map((item) => item.label)),
+    JSON.stringify(["Main account", "Élise  /proxy", "Noir  /noir"]),
   );
+  assert.equal(sheet.props.items[1].selected, true);
   assert.equal(
-    sheet.options[1].icon.uri,
+    sheet.props.items[1].icon.uri,
     "discord-app://plural-userproxy-app/elise-app-icon",
   );
   assert.equal(
-    sheet.options[2].icon.uri,
+    sheet.props.items[2].icon.uri,
     "discord-app://noir-userproxy-app/noir-app-icon",
   );
   assert.deepEqual(
@@ -1213,6 +1265,23 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
     ],
   );
 
+  const renderedSheet = await renderLazySheet(sheet);
+  const noirRow = findReactNode(
+    renderedSheet,
+    (node) => node.props && node.props.accessibilityLabel === "Noir  /noir",
+  );
+  const noirImage = findReactNode(
+    noirRow,
+    (node) => node.props
+      && node.props.source
+      && node.props.source.uri
+        === "discord-app://noir-userproxy-app/noir-app-icon",
+  );
+  assert.ok(noirRow);
+  assert.ok(noirImage);
+  assert.equal(noirImage.props.style.borderRadius, 21);
+  assert.equal("tintColor" in noirImage.props.style, false);
+
   const loadedTree = harness.renderComposerActions();
   const loadedElement = loadedTree.children[1];
   const loadedButton = loadedElement.type(loadedElement.props);
@@ -1221,7 +1290,7 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
     "discord-app://plural-userproxy-app/elise-app-icon",
   );
 
-  sheet.options[2].onPress();
+  noirRow.props.onPress();
   assert.equal(
     harness.storage.channelCommands[harness.channel.id],
     "legacy:noir",
@@ -1240,8 +1309,8 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
 
   updatedButton.props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
-  const updatedSheet = harness.calls.actionSheets[1];
-  updatedSheet.options[0].onPress();
+  const updatedSheet = harness.calls.lazySheets[1];
+  updatedSheet.props.items[0].onPress();
   assert.equal(harness.storage.channelCommands[harness.channel.id], undefined);
   assert.equal(harness.storage.disabledChannels[harness.channel.id], true);
 });
@@ -1263,8 +1332,20 @@ test("v7 keeps initials when an application has no profile picture", async () =>
   selectorButton.props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(harness.calls.actionSheets.length, 1);
-  assert.equal("icon" in harness.calls.actionSheets[0].options[1], false);
+  assert.equal(harness.calls.lazySheets.length, 1);
+  const sheet = harness.calls.lazySheets[0];
+  assert.equal(sheet.props.items[1].icon, null);
+  const renderedSheet = await renderLazySheet(sheet);
+  const eliseRow = findReactNode(
+    renderedSheet,
+    (node) => node.props && node.props.accessibilityLabel === "Élise  /proxy",
+  );
+  assert.ok(eliseRow);
+  assert.match(JSON.stringify(eliseRow), /É/);
+  assert.equal(findReactNode(
+    eliseRow,
+    (node) => node.props && node.props.source,
+  ), null);
   const rerendered = harness.renderComposerActions();
   const rerenderedButton = rerendered.children[1].type(
     rerendered.children[1].props,
@@ -1282,6 +1363,7 @@ test("v7 leaves the gift button unchanged outside DMs", () => {
   assert.equal(tree.type, "DiscordChatInputActions");
   assert.equal(harness.calls.composer[0].shouldShowGiftButton, true);
   assert.equal(harness.calls.actionSheets.length, 0);
+  assert.equal(harness.calls.lazySheets.length, 0);
 });
 
 test("v7 supports Discord's ChatInputRightActions composer variant", () => {
