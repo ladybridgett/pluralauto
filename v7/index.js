@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.4.0";
+  var VERSION = "7.4.1";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -1070,20 +1070,11 @@
   }
 
   function openAddedApplicationPicker(channelId, onSelect) {
-    var sheetModule;
-    var showSheet;
     try {
-      sheetModule = metro.findByProps("showSimpleActionSheet");
-      showSheet = sheetModule && sheetModule.showSimpleActionSheet;
-      if (typeof showSheet !== "function") {
-        toast("PluralAuto could not open the app dropdown.");
-        return false;
-      }
       scanAddedApplications(channelId)
         .then(function (apps) {
-          var options = [];
+          var items = [];
           var index;
-          var option;
           if (!apps.length) {
             toast(
               "PluralAuto found no added apps. Open Discord's Apps picker once, then retry."
@@ -1092,25 +1083,24 @@
           }
           for (index = 0; index < apps.length; index += 1) {
             (function (app) {
-              option = {
+              items.push({
                 label: app.label,
+                icon: app.icon,
+                initial: selectorInitial({
+                  label: app.label,
+                  command: ""
+                }),
                 onPress: function () {
                   if (typeof onSelect === "function") onSelect(app);
-                  hideCharacterActionSheet();
                 }
-              };
-              if (app.icon) option.icon = app.icon;
-              options.push(option);
+              });
             })(apps[index]);
           }
-          showSheet({
-            key: "CardOverflow",
-            header: {
-              title: "Choose an added app",
-              subtitle: "Discord apps available to your account",
-              onClose: hideCharacterActionSheet
-            },
-            options: options
+          openImageChoiceSheet({
+            sheetKey: "PluralAutoAppPicker",
+            title: "Choose an added app",
+            subtitle: "Discord apps available to your account",
+            items: items
           });
         })
         .catch(function (error) {
@@ -1658,7 +1648,261 @@
     return (label.charAt(0) || "?").toUpperCase();
   }
 
-  function hideCharacterActionSheet() {
+  function ImageChoiceSheet(props) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var Pressable = RN.Pressable || RN.TouchableOpacity || RN.View;
+    var ScrollContainer = RN.ScrollView || RN.View;
+    var actionSheetModule;
+    var ActionSheet;
+    var screenHeight = 800;
+    var listChildren = [];
+    var items = props && props.items ? props.items : [];
+    var index;
+    var content;
+
+    try {
+      actionSheetModule = metro.findByProps("ActionSheet");
+      ActionSheet = actionSheetModule && actionSheetModule.ActionSheet;
+    } catch (ignored) {}
+    try {
+      if (RN.Dimensions && typeof RN.Dimensions.get === "function") {
+        screenHeight = RN.Dimensions.get("window").height || screenHeight;
+      }
+    } catch (ignored2) {}
+
+    for (index = 0; index < items.length; index += 1) {
+      (function (item, itemIndex) {
+        var avatar =
+          item.icon && RN.Image
+            ? React.createElement(RN.Image, {
+                source: item.icon,
+                resizeMode: "cover",
+                style: {
+                  width: 42,
+                  height: 42,
+                  borderRadius: 21
+                }
+              })
+            : React.createElement(
+                RN.View,
+                {
+                  style: {
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
+                    backgroundColor: item.main ? "#4e5058" : "#5865f2",
+                    alignItems: "center",
+                    justifyContent: "center"
+                  }
+                },
+                React.createElement(
+                  RN.Text,
+                  {
+                    style: {
+                      color: "white",
+                      fontSize: item.main ? 11 : 16,
+                      fontWeight: "700"
+                    }
+                  },
+                  item.initial || "?"
+                )
+              );
+        listChildren.push(
+          React.createElement(
+            Pressable,
+            {
+              key: "choice-" + String(item.key || itemIndex),
+              accessibilityRole: "button",
+              accessibilityLabel: item.label,
+              onPress: function () {
+                hideCharacterActionSheet(props.sheetKey);
+                if (typeof item.onPress === "function") item.onPress();
+              },
+              style: {
+                minHeight: 68,
+                paddingHorizontal: 16,
+                flexDirection: "row",
+                alignItems: "center",
+                borderBottomWidth:
+                  itemIndex === items.length - 1 ? 0 : 1,
+                borderBottomColor: "#2b2d31"
+              }
+            },
+            avatar,
+            React.createElement(
+              RN.Text,
+              {
+                style: {
+                  color: "white",
+                  fontSize: 17,
+                  fontWeight: "600",
+                  flex: 1,
+                  marginLeft: 12
+                }
+              },
+              item.label
+            ),
+            item.selected
+              ? React.createElement(
+                  RN.Text,
+                  {
+                    style: {
+                      color: "#b5bac1",
+                      fontSize: 22,
+                      fontWeight: "700"
+                    }
+                  },
+                  "✓"
+                )
+              : null
+          )
+        );
+      })(items[index], index);
+    }
+
+    content = React.createElement(
+      RN.View,
+      {
+        style: {
+          paddingHorizontal: 16,
+          paddingBottom: 18
+        }
+      },
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            minHeight: 62,
+            flexDirection: "row",
+            alignItems: "center"
+          }
+        },
+        React.createElement(RN.View, { style: { width: 44 } }),
+        React.createElement(
+          RN.View,
+          { style: { flex: 1, alignItems: "center" } },
+          React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "white",
+                fontSize: 20,
+                fontWeight: "700",
+                textAlign: "center"
+              }
+            },
+            props.title
+          ),
+          props.subtitle
+            ? React.createElement(
+                RN.Text,
+                {
+                  style: {
+                    color: "#b5bac1",
+                    fontSize: 13,
+                    marginTop: 3,
+                    textAlign: "center"
+                  }
+                },
+                props.subtitle
+              )
+            : null
+        ),
+        React.createElement(
+          Pressable,
+          {
+            accessibilityRole: "button",
+            accessibilityLabel: "Close",
+            onPress: function () {
+              hideCharacterActionSheet(props.sheetKey);
+            },
+            style: {
+              width: 44,
+              height: 44,
+              alignItems: "center",
+              justifyContent: "center"
+            }
+          },
+          React.createElement(
+            RN.Text,
+            { style: { color: "white", fontSize: 32, fontWeight: "300" } },
+            "×"
+          )
+        )
+      ),
+      React.createElement.apply(
+        React,
+        [
+          ScrollContainer,
+          {
+            style: {
+              maxHeight: Math.floor(screenHeight * 0.62),
+              backgroundColor: "#111214",
+              borderRadius: 20,
+              overflow: "hidden"
+            }
+          }
+        ].concat(listChildren)
+      )
+    );
+
+    return ActionSheet
+      ? React.createElement(ActionSheet, null, content)
+      : content;
+  }
+
+  function openImageChoiceSheet(props) {
+    var controller;
+    var sheetModule;
+    var showSheet;
+    var options;
+    var index;
+    try {
+      controller = metro.findByProps("openLazy", "hideActionSheet");
+      if (controller && typeof controller.openLazy === "function") {
+        controller.openLazy(
+          Promise.resolve({ default: ImageChoiceSheet }),
+          props.sheetKey,
+          props
+        );
+        return true;
+      }
+    } catch (ignored) {}
+
+    try {
+      sheetModule = metro.findByProps("showSimpleActionSheet");
+      showSheet = sheetModule && sheetModule.showSimpleActionSheet;
+      if (typeof showSheet !== "function") return false;
+      options = [];
+      for (index = 0; index < props.items.length; index += 1) {
+        (function (item) {
+          options.push({
+            label: (item.selected ? "✓ " : "") + item.label,
+            onPress: function () {
+              hideCharacterActionSheet(props.sheetKey);
+              if (typeof item.onPress === "function") item.onPress();
+            }
+          });
+        })(props.items[index]);
+      }
+      showSheet({
+        key: props.sheetKey,
+        header: {
+          title: props.title,
+          subtitle: props.subtitle,
+          onClose: function () {
+            hideCharacterActionSheet(props.sheetKey);
+          }
+        },
+        options: options
+      });
+      return true;
+    } catch (ignored2) {}
+    return false;
+  }
+
+  function hideCharacterActionSheet(sheetKey) {
     var controller;
     try {
       controller = metro.findByProps("openLazy", "hideActionSheet");
@@ -1666,9 +1910,13 @@
         controller &&
         typeof controller.hideActionSheet === "function"
       ) {
-        controller.hideActionSheet();
+        try {
+          controller.hideActionSheet(sheetKey);
+        } catch (ignored) {
+          controller.hideActionSheet();
+        }
       }
-    } catch (ignored) {}
+    } catch (ignored2) {}
   }
 
   function refreshSelector(refresh) {
@@ -1679,8 +1927,6 @@
   }
 
   function openCharacterSelector(channelId, refresh) {
-    var sheetModule;
-    var showSheet;
     var current;
     var entries;
     var channel;
@@ -1689,12 +1935,6 @@
     try {
       if (!channelId || !isWantedChannel(channelId)) {
         toast("PluralAuto: open a DM to choose a character.");
-        return false;
-      }
-      sheetModule = metro.findByProps("showSimpleActionSheet");
-      showSheet = sheetModule && sheetModule.showSimpleActionSheet;
-      if (typeof showSheet !== "function") {
-        toast("PluralAuto: open plugin settings to choose a character.");
         return false;
       }
 
@@ -1706,52 +1946,49 @@
       });
       Promise.all(iconPromises)
         .then(function (icons) {
-          var options = [{
-            label: (current ? "" : "✓ ") + "Main account",
+          var items = [{
+            key: "main-account",
+            label: "Main account",
+            main: true,
+            initial: "ME",
+            selected: !current,
             onPress: function () {
               selectProxyForChannel(channelId, "");
               refreshSelector(refresh);
-              hideCharacterActionSheet();
               toast("PluralAuto: Main account selected.");
             }
           }];
           var index;
-          var option;
 
           for (index = 0; index < entries.length; index += 1) {
             (function (entry, icon) {
-              option = {
-                label:
-                  (current &&
-                  proxySelectionKey(current) === proxySelectionKey(entry)
-                    ? "✓ "
-                    : "") +
-                  entry.label +
-                  "  /" +
-                  entry.command,
+              items.push({
+                key: proxySelectionKey(entry),
+                label: entry.label + "  /" + entry.command,
+                icon: icon,
+                initial: selectorInitial(entry),
+                selected:
+                  Boolean(current) &&
+                  proxySelectionKey(current) === proxySelectionKey(entry),
                 onPress: function () {
                   selectProxyForChannel(channelId, entry);
                   refreshSelector(refresh);
-                  hideCharacterActionSheet();
                   toast("PluralAuto: " + entry.label + " selected.");
                 }
-              };
-              if (icon) option.icon = icon;
-              options.push(option);
+              });
             })(entries[index], icons[index]);
           }
 
-          showSheet({
-            key: "CardOverflow",
-            header: {
-              title: "PluralAuto character",
-              subtitle: channel && channel.name
-                ? String(channel.name)
-                : "Current DM",
-              onClose: hideCharacterActionSheet
-            },
-            options: options
-          });
+          if (!openImageChoiceSheet({
+            sheetKey: "PluralAutoCharacterPicker",
+            title: "PluralAuto character",
+            subtitle: channel && channel.name
+              ? String(channel.name)
+              : "Current DM",
+            items: items
+          })) {
+            toast("PluralAuto could not open the character selector.");
+          }
         })
         .catch(function (error) {
           toast("PluralAuto could not load the character selector.");
