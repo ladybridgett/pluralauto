@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.1.0";
+  var VERSION = "7.2.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -13,6 +13,10 @@
   var commandExecutor = null;
   var unpatch = null;
   var retryTimer = null;
+  var composerUnpatches = [];
+  var composerRetryTimer = null;
+  var composerOwnerName = "";
+  var composerOwnerSeenAt = 0;
   var bypassNext = false;
   var temporaryUnpatches = [];
 
@@ -102,6 +106,8 @@
       "PluralAuto " + VERSION,
       "Status: " + (storage.status || "Unknown"),
       "Detail: " + (storage.detail || "No details"),
+      "Character selector: " +
+        (storage.composerSelectorStatus || "Waiting"),
       "Updated: " + (storage.updatedAt || "Unknown"),
       storage.lastError ? "Error:\n" + storage.lastError : "Error: none"
     ].join("\n");
@@ -958,6 +964,346 @@
     };
   }
 
+  function selectProxyForChannel(channelId, command) {
+    var wanted = normalise(command);
+    if (!channelId) return;
+    if (!wanted) {
+      delete storage.channelCommands[channelId];
+      storage.disabledChannels[channelId] = true;
+      return;
+    }
+    storage.channelCommands[channelId] = wanted;
+    storage.disabledChannels[channelId] = false;
+  }
+
+  function composerChannelId(props) {
+    var selectedStore;
+    var channelId;
+    try {
+      if (props && props.channel && props.channel.id) {
+        return String(props.channel.id);
+      }
+      if (props && props.channelId) return String(props.channelId);
+      if (props && props.channel_id) return String(props.channel_id);
+      selectedStore = getSelectedChannelStore();
+      if (
+        selectedStore &&
+        typeof selectedStore.getChannelId === "function"
+      ) {
+        channelId = selectedStore.getChannelId();
+        if (channelId) return String(channelId);
+      }
+    } catch (ignored) {}
+    return "";
+  }
+
+  function selectorInitial(proxy) {
+    var label;
+    if (!proxy) return "ME";
+    label = String(proxy.label || proxy.command || "?")
+      .replace(/^[\s@/]+/, "");
+    return (label.charAt(0) || "?").toUpperCase();
+  }
+
+  function hideCharacterActionSheet() {
+    var controller;
+    try {
+      controller = metro.findByProps("openLazy", "hideActionSheet");
+      if (
+        controller &&
+        typeof controller.hideActionSheet === "function"
+      ) {
+        controller.hideActionSheet();
+      }
+    } catch (ignored) {}
+  }
+
+  function refreshSelector(refresh) {
+    if (typeof refresh !== "function") return;
+    try {
+      refresh(function (value) { return value + 1; });
+    } catch (ignored) {}
+  }
+
+  function openCharacterSelector(channelId, refresh) {
+    var sheetModule;
+    var showSheet;
+    var current;
+    var entries;
+    var options;
+    var channel;
+    var index;
+
+    try {
+      if (!channelId || !isWantedChannel(channelId)) {
+        toast("PluralAuto: open a DM to choose a character.");
+        return false;
+      }
+      sheetModule = metro.findByProps("showSimpleActionSheet");
+      showSheet = sheetModule && sheetModule.showSimpleActionSheet;
+      if (typeof showSheet !== "function") {
+        toast("PluralAuto: open plugin settings to choose a character.");
+        return false;
+      }
+
+      current = proxyForChannel(channelId);
+      entries = parseProxyLines(storage.commandLines);
+      options = [{
+        label: (current ? "" : "✓ ") + "Main account",
+        onPress: function () {
+          selectProxyForChannel(channelId, "");
+          refreshSelector(refresh);
+          hideCharacterActionSheet();
+          toast("PluralAuto: Main account selected.");
+        }
+      }];
+
+      for (index = 0; index < entries.length; index += 1) {
+        (function (entry) {
+          options.push({
+            label:
+              (current && current.command === entry.command ? "✓ " : "") +
+              entry.label +
+              "  /" +
+              entry.command,
+            onPress: function () {
+              selectProxyForChannel(channelId, entry.command);
+              refreshSelector(refresh);
+              hideCharacterActionSheet();
+              toast("PluralAuto: " + entry.label + " selected.");
+            }
+          });
+        })(entries[index]);
+      }
+
+      channel = getChannel(channelId);
+      showSheet({
+        key: "CardOverflow",
+        header: {
+          title: "PluralAuto character",
+          subtitle: channel && channel.name
+            ? String(channel.name)
+            : "Current DM",
+          onClose: hideCharacterActionSheet
+        },
+        options: options
+      });
+      return true;
+    } catch (error) {
+      toast("PluralAuto could not open the character selector.");
+      try {
+        if (vendetta.logger && typeof vendetta.logger.error === "function") {
+          vendetta.logger.error("PluralAuto character selector", error);
+        }
+      } catch (ignored) {}
+      return false;
+    }
+  }
+
+  function CharacterSelectorButton(props) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var rerenderState = React.useState(0);
+    var rerender = rerenderState[1];
+    var channelId = props && props.channelId
+      ? String(props.channelId)
+      : composerChannelId(props);
+    var proxy;
+    var label;
+    var Pressable;
+
+    if (!channelId || !isWantedChannel(channelId)) return null;
+    proxy = proxyForChannel(channelId);
+    label = proxy ? String(proxy.label || proxy.command) : "Main account";
+    Pressable = RN.TouchableOpacity || RN.Pressable;
+    if (!Pressable || !RN.View || !RN.Text) return null;
+
+    return React.createElement(
+      Pressable,
+      {
+        accessibilityRole: "button",
+        accessibilityLabel:
+          "Choose PluralAuto character. Current: " + label,
+        onPress: function () {
+          openCharacterSelector(channelId, rerender);
+        },
+        style: {
+          width: 44,
+          height: 44,
+          alignItems: "center",
+          justifyContent: "center"
+        }
+      },
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            width: 30,
+            height: 30,
+            borderRadius: 15,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: proxy ? "#5865f2" : "#4e5058"
+          }
+        },
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "white",
+              fontSize: proxy ? 15 : 10,
+              fontWeight: "700"
+            }
+          },
+          selectorInitial(proxy)
+        )
+      )
+    );
+  }
+
+  function wrapComposerActions(rendered, channelId) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var selector = React.createElement(CharacterSelectorButton, {
+      key: "pluralauto-character-selector",
+      channelId: channelId
+    });
+    if (!rendered) return selector;
+    return React.createElement(
+      RN.View,
+      {
+        style: {
+          flexDirection: "row",
+          alignItems: "center"
+        }
+      },
+      rendered,
+      selector
+    );
+  }
+
+  function findComposerTarget(displayName) {
+    var found;
+    var candidate;
+    try {
+      if (typeof metro.find === "function") {
+        found = metro.find(function (exports) {
+          return Boolean(
+            exports &&
+            exports.type &&
+            exports.type.displayName === displayName &&
+            typeof exports.type.render === "function"
+          );
+        });
+      }
+    } catch (ignored) {}
+    if (
+      found &&
+      found.type &&
+      typeof found.type.render === "function"
+    ) {
+      return found.type;
+    }
+
+    try {
+      if (typeof metro.findByName === "function") {
+        candidate = metro.findByName(displayName);
+      }
+    } catch (ignored2) {}
+    if (
+      candidate &&
+      candidate.type &&
+      typeof candidate.type.render === "function"
+    ) {
+      return candidate.type;
+    }
+    if (candidate && typeof candidate.render === "function") {
+      return candidate;
+    }
+    return null;
+  }
+
+  function composerOwnsSelector(targetName) {
+    var now = Date.now();
+    if (
+      !composerOwnerName ||
+      composerOwnerName === targetName ||
+      now - composerOwnerSeenAt > 2000
+    ) {
+      composerOwnerName = targetName;
+      composerOwnerSeenAt = now;
+      return true;
+    }
+    return false;
+  }
+
+  function patchComposerTarget(target, targetName) {
+    return vendetta.patcher.instead(
+      "render",
+      target,
+      function (args, original) {
+        var props = args[0] || {};
+        var channelId = composerChannelId(props);
+        var ownsSelector;
+        var rendered;
+        if (!channelId || !isWantedChannel(channelId)) {
+          return original.apply(null, args);
+        }
+        ownsSelector = composerOwnsSelector(targetName);
+        props.shouldShowGiftButton = false;
+        rendered = original.apply(null, args);
+        return ownsSelector
+          ? wrapComposerActions(rendered, channelId)
+          : rendered;
+      }
+    );
+  }
+
+  function attachComposerSelector() {
+    var target;
+    var targets = [];
+    var names = ["ChatInputActions", "ChatInputRightActions"];
+    var attachedNames = [];
+    var index;
+    try {
+      if (composerUnpatches.length) return true;
+      resolveCore();
+      for (index = 0; index < names.length; index += 1) {
+        target = findComposerTarget(names[index]);
+        if (!target || targets.indexOf(target) !== -1) continue;
+        targets.push(target);
+        composerUnpatches.push(
+          patchComposerTarget(target, names[index])
+        );
+        attachedNames.push(names[index]);
+      }
+      if (!composerUnpatches.length) {
+        storage.composerSelectorStatus =
+          "Waiting for Discord's chat input.";
+        return false;
+      }
+      storage.composerSelectorStatus =
+        "Ready (" + attachedNames.join(", ") + ")";
+      return true;
+    } catch (error) {
+      storage.composerSelectorStatus =
+        "Error: " + (error.message || String(error));
+      return false;
+    }
+  }
+
+  function retryComposerSelector() {
+    try {
+      if (composerRetryTimer) clearTimeout(composerRetryTimer);
+      composerRetryTimer = null;
+      if (!attachComposerSelector()) {
+        composerRetryTimer = setTimeout(retryComposerSelector, 3000);
+      }
+    } catch (ignored) {
+      composerRetryTimer = setTimeout(retryComposerSelector, 3000);
+    }
+  }
+
   function hasStickers(message) {
     if (!message) return false;
     if (message.stickerIds && message.stickerIds.length) return true;
@@ -1558,6 +1904,9 @@
       if (!attach()) {
         retryTimer = setTimeout(retryAttach, 1500);
       }
+      if (!attachComposerSelector()) {
+        composerRetryTimer = setTimeout(retryComposerSelector, 1500);
+      }
     } catch (error) {
       try {
         setStatus("Startup error", error.message || String(error), error);
@@ -1572,12 +1921,22 @@
       retryTimer = null;
     } catch (ignored) {}
     try {
+      if (composerRetryTimer) clearTimeout(composerRetryTimer);
+      composerRetryTimer = null;
+    } catch (ignored2) {}
+    try {
       if (typeof unpatch === "function") unpatch();
       unpatch = null;
-    } catch (ignored2) {}
+    } catch (ignored3) {}
+    while (composerUnpatches.length) {
+      cleanup = composerUnpatches.pop();
+      try { cleanup(); } catch (ignored4) {}
+    }
+    composerOwnerName = "";
+    composerOwnerSeenAt = 0;
     while (temporaryUnpatches.length) {
       cleanup = temporaryUnpatches.pop();
-      try { cleanup(); } catch (ignored3) {}
+      try { cleanup(); } catch (ignored5) {}
     }
     bypassNext = false;
   };
