@@ -67,7 +67,7 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
-test("v7 manifest hash matches its app-PFP selector bundle", () => {
+test("v7 manifest hash matches its scanned-app proxy-list bundle", () => {
   const root = path.join(__dirname, "..", "v7");
   const source = fs.readFileSync(path.join(root, "index.js"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -568,8 +568,8 @@ function createV7Harness(options = {}) {
     ...proxyCommand,
     id: "noir-v7",
     applicationId: noirApplicationId,
-    name: "noir",
-    untranslatedName: "noir",
+    name: options.noirCommandName || "noir",
+    untranslatedName: options.noirCommandName || "noir",
     section: {
       id: noirApplicationId,
       name: "Noir",
@@ -744,6 +744,22 @@ function createV7Harness(options = {}) {
         if (name === "PendingReplyStore") return pendingReplyStore;
         if (name === "ApplicationCommandIndexStore") {
           return {
+            getUserState() {
+              return {
+                result: {
+                  sections: options.proxyCommandMissing ? {} : {
+                    [applicationId]: {
+                      descriptor: proxyCommand.section,
+                      commands: { [proxyCommand.id]: proxyCommand },
+                    },
+                    [noirApplicationId]: {
+                      descriptor: noirCommand.section,
+                      commands: { [noirCommand.id]: noirCommand },
+                    },
+                  },
+                },
+              };
+            },
             query(_context, query, queryOptions) {
               calls.query.push({ query, queryOptions });
               if (query.commandTypes.includes(3)) {
@@ -760,7 +776,14 @@ function createV7Harness(options = {}) {
                 loading: false,
                 commands: options.proxyCommandMissing
                   ? []
-                  : [query.text === "noir" ? noirCommand : proxyCommand],
+                  : query.text === ""
+                    ? [proxyCommand, noirCommand]
+                    : [
+                        queryOptions.applicationId === noirApplicationId
+                        || query.text === noirCommand.name
+                          ? noirCommand
+                          : proxyCommand,
+                      ],
               };
             },
           };
@@ -1010,10 +1033,139 @@ test("v7 renders enabled reply and attachment settings", () => {
   assert.ok(tree);
   assert.match(JSON.stringify(tree), /Proxy selector - current DM/);
   assert.match(JSON.stringify(tree), /Main account \(no proxy\)/);
-  assert.equal(harness.storage.version, "7.3.0");
+  assert.match(JSON.stringify(tree), /\+ Add proxy/);
+  assert.doesNotMatch(JSON.stringify(tree), /One per line/);
+  assert.equal(harness.storage.version, "7.4.0");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
+});
+
+test("v7 scans added apps and manages proxies through the new list UI", async () => {
+  const harness = createV7Harness({
+    unconfigured: true,
+    storage: {
+      commandLines: "",
+      proxies: [],
+      channelCommands: {},
+      disabledChannels: {},
+    },
+  });
+
+  function nodeText(node) {
+    if (typeof node === "string") return node;
+    if (!node || typeof node !== "object" || !Array.isArray(node.children)) {
+      return "";
+    }
+    return node.children.map(nodeText).join("");
+  }
+
+  function findNode(node, predicate) {
+    if (!node || typeof node !== "object") return null;
+    if (predicate(node)) return node;
+    if (!Array.isArray(node.children)) return null;
+    for (const child of node.children) {
+      const found = findNode(child, predicate);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  let tree = harness.plugin.settings();
+  const addButton = findNode(
+    tree,
+    (node) => node.props
+      && typeof node.props.onPress === "function"
+      && nodeText(node) === "+ Add proxy",
+  );
+  assert.ok(addButton);
+  addButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.calls.actionSheets.length, 1);
+  const appSheet = harness.calls.actionSheets[0];
+  assert.equal(appSheet.header.title, "Choose an added app");
+  assert.equal(
+    JSON.stringify(appSheet.options.map((option) => option.label)),
+    JSON.stringify(["Élise", "Noir"]),
+  );
+  assert.equal(
+    appSheet.options[0].icon.uri,
+    "discord-app://plural-userproxy-app/elise-app-icon",
+  );
+
+  appSheet.options[0].onPress();
+  assert.equal(harness.storage.proxies.length, 1);
+  assert.equal(
+    harness.storage.proxies[0].applicationId,
+    "plural-userproxy-app",
+  );
+  assert.equal(harness.storage.proxies[0].label, "Élise");
+  assert.equal(harness.storage.proxies[0].command, "proxy");
+
+  tree = harness.plugin.settings();
+  const commandInput = findNode(
+    tree,
+    (node) => node.props
+      && node.props.value === "proxy"
+      && typeof node.props.onChangeText === "function",
+  );
+  assert.ok(commandInput);
+  commandInput.props.onChangeText("/elise");
+  assert.equal(harness.storage.proxies[0].command, "elise");
+  assert.match(harness.storage.commandLines, /Élise \| elise \| message/);
+
+  tree = harness.plugin.settings();
+  const appButton = findNode(
+    tree,
+    (node) => node.props
+      && node.props.accessibilityLabel === "Choose app for Élise",
+  );
+  assert.ok(appButton);
+  appButton.props.onPress();
+  await new Promise((resolve) => setImmediate(resolve));
+  const changeSheet = harness.calls.actionSheets[1];
+  changeSheet.options[1].onPress();
+  assert.equal(harness.storage.proxies[0].applicationId, "noir-userproxy-app");
+  assert.equal(harness.storage.proxies[0].label, "Noir");
+  assert.equal(harness.storage.proxies[0].command, "elise");
+
+  tree = harness.plugin.settings();
+  const removeButton = findNode(
+    tree,
+    (node) => node.props
+      && typeof node.props.onPress === "function"
+      && nodeText(node) === "Remove proxy",
+  );
+  assert.ok(removeButton);
+  removeButton.props.onPress();
+  assert.equal(harness.storage.proxies.length, 0);
+});
+
+test("v7 resolves a listed proxy inside its selected application", async () => {
+  const harness = createV7Harness({
+    noirCommandName: "proxy",
+    storage: {
+      commandLines: "",
+      proxies: [{
+        id: "noir-proxy",
+        applicationId: "noir-userproxy-app",
+        label: "Noir",
+        command: "proxy",
+        option: "message",
+      }],
+      channelCommands: { "dm-v7": "noir-proxy" },
+      disabledChannels: {},
+    },
+  });
+  const result = await harness.send({ content: "app-specific", attachments: [] });
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.executor[0].command.applicationId, "noir-userproxy-app");
+  assert.ok(harness.calls.query.some(({ query, queryOptions }) => (
+    query.text === "proxy"
+    && queryOptions.applicationId === "noir-userproxy-app"
+  )));
 });
 
 test("v7 replaces the DM gift action with an app-PFP character selector", async () => {
@@ -1070,7 +1222,10 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
   );
 
   sheet.options[2].onPress();
-  assert.equal(harness.storage.channelCommands[harness.channel.id], "noir");
+  assert.equal(
+    harness.storage.channelCommands[harness.channel.id],
+    "legacy:noir",
+  );
   assert.equal(harness.storage.disabledChannels[harness.channel.id], false);
   assert.equal(harness.calls.hiddenSheets, 1);
 
@@ -1150,6 +1305,8 @@ test("v7 settings selector configures and clears the current DM proxy", async ()
       disabledChannels: {},
     },
   });
+  assert.equal(harness.storage.proxies.length, 1);
+  assert.equal(harness.storage.proxies[0].id, "legacy:proxy");
 
   function nodeText(node) {
     if (typeof node === "string") return node;
@@ -1176,7 +1333,10 @@ test("v7 settings selector configures and clears the current DM proxy", async ()
   const proxyButton = findButton(tree, "Élise  /proxy");
   assert.ok(proxyButton);
   proxyButton.props.onPress();
-  assert.equal(harness.storage.channelCommands[harness.channel.id], "proxy");
+  assert.equal(
+    harness.storage.channelCommands[harness.channel.id],
+    "legacy:proxy",
+  );
   assert.equal(harness.storage.disabledChannels[harness.channel.id], false);
 
   const proxied = await harness.send({ content: "selected", attachments: [] });
