@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.0 • Instant proxy picker with asynchronous PFPs and a send-progress spinner.",
+  "description": "Version 7.6.1 • First-open switcher speed fix, persistent PFP cache, and send-progress spinner.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "d84f24339f2f1d31f3176c22c01894025e3e318f2d0984428d5d2683270de5be"
+  "hash": "19de857b9a19ed6c6f6b587bb3fca02eb53d11b9371f39f231021a0a34908d7f"
 }
