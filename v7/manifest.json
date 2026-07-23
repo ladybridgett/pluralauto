@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.0.1 • Automatic /plu/ral DMs with replies and up to 10 attachments.",
+  "description": "Version 7.0.2 • Automatic /plu/ral DMs with replies and up to 10 attachments.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "9fa7ecdc5992b1aa9860581c725bb1d65da252c3ba4c060f7b0634b744d5ad7d"
+  "hash": "284d01975c3e33be75a3de3e8c7ff9fc00b12a0ec9c79f965a1dcc3e9ce18703"
 }
