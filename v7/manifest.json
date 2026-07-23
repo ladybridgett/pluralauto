@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.3.0 • App-PFP character selector, replies, and up to 10 attachments.",
+  "description": "Version 7.4.0 • Add proxies from scanned Discord apps and edit them in a list.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "cb0154a12d596f2343c296cfd047ab63f689a1f26bc663fbc9558ddfd7bda61d"
+  "hash": "4436e79295c7eee6022623154315e8e168fafc6cf1471b941ca5205e81f042d8"
 }
