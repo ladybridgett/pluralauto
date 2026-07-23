@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.5.0";
+  var VERSION = "7.6.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -20,8 +20,12 @@
   var directReplyRetryTimer = null;
   var composerUnpatches = [];
   var composerRetryTimer = null;
+  var sendButtonUnpatch = null;
+  var sendButtonRetryTimer = null;
   var composerOwnerName = "";
   var composerOwnerSeenAt = 0;
+  var sendingChannels = {};
+  var sendingListeners = {};
   var bypassNext = false;
   var temporaryUnpatches = [];
   var applicationIconUtils = null;
@@ -241,6 +245,8 @@
       "Detail: " + (storage.detail || "No details"),
       "Character selector: " +
         (storage.composerSelectorStatus || "Waiting"),
+      "Send loading indicator: " +
+        (storage.sendButtonStatus || "Waiting"),
       "Proxy message display: " +
         (storage.localProxyStatus || "Waiting"),
       "Proxy notifications: " +
@@ -1909,6 +1915,115 @@
     return (label.charAt(0) || "?").toUpperCase();
   }
 
+  function ImageChoiceRow(props) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var item = props.item;
+    var Pressable = RN.Pressable || RN.TouchableOpacity || RN.View;
+    var iconState = React.useState(item.icon || null);
+    var icon = iconState[0] || item.icon || null;
+    var avatar;
+
+    React.useEffect(function () {
+      var active = true;
+      if (icon || typeof item.loadIcon !== "function") {
+        return function () { active = false; };
+      }
+      Promise.resolve().then(function () {
+        return item.loadIcon();
+      }).then(
+        function (source) {
+          if (active && source) iconState[1](source);
+        },
+        function () {}
+      );
+      return function () { active = false; };
+    }, [item.key, icon]);
+
+    avatar =
+      icon && RN.Image
+        ? React.createElement(RN.Image, {
+            source: icon,
+            resizeMode: "cover",
+            style: {
+              width: 42,
+              height: 42,
+              borderRadius: 21
+            }
+          })
+        : React.createElement(
+            RN.View,
+            {
+              style: {
+                width: 42,
+                height: 42,
+                borderRadius: 21,
+                backgroundColor: item.main ? "#4e5058" : "#5865f2",
+                alignItems: "center",
+                justifyContent: "center"
+              }
+            },
+            React.createElement(
+              RN.Text,
+              {
+                style: {
+                  color: "white",
+                  fontSize: item.main ? 11 : 16,
+                  fontWeight: "700"
+                }
+              },
+              item.initial || "?"
+            )
+          );
+
+    return React.createElement(
+      Pressable,
+      {
+        accessibilityRole: "button",
+        accessibilityLabel: item.label,
+        onPress: function () {
+          hideCharacterActionSheet(props.sheetKey);
+          if (typeof item.onPress === "function") item.onPress();
+        },
+        style: {
+          minHeight: 68,
+          paddingHorizontal: 16,
+          flexDirection: "row",
+          alignItems: "center",
+          borderBottomWidth: props.isLast ? 0 : 1,
+          borderBottomColor: "#2b2d31"
+        }
+      },
+      avatar,
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "white",
+            fontSize: 17,
+            fontWeight: "600",
+            flex: 1,
+            marginLeft: 12
+          }
+        },
+        item.label
+      ),
+      item.selected
+        ? React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "#b5bac1",
+                fontSize: 22,
+                fontWeight: "700"
+              }
+            },
+            "✓"
+          )
+        : null
+    );
+  }
+
   function ImageChoiceSheet(props) {
     var React = metro.common.React;
     var RN = metro.common.ReactNative;
@@ -1933,93 +2048,14 @@
     } catch (ignored2) {}
 
     for (index = 0; index < items.length; index += 1) {
-      (function (item, itemIndex) {
-        var avatar =
-          item.icon && RN.Image
-            ? React.createElement(RN.Image, {
-                source: item.icon,
-                resizeMode: "cover",
-                style: {
-                  width: 42,
-                  height: 42,
-                  borderRadius: 21
-                }
-              })
-            : React.createElement(
-                RN.View,
-                {
-                  style: {
-                    width: 42,
-                    height: 42,
-                    borderRadius: 21,
-                    backgroundColor: item.main ? "#4e5058" : "#5865f2",
-                    alignItems: "center",
-                    justifyContent: "center"
-                  }
-                },
-                React.createElement(
-                  RN.Text,
-                  {
-                    style: {
-                      color: "white",
-                      fontSize: item.main ? 11 : 16,
-                      fontWeight: "700"
-                    }
-                  },
-                  item.initial || "?"
-                )
-              );
-        listChildren.push(
-          React.createElement(
-            Pressable,
-            {
-              key: "choice-" + String(item.key || itemIndex),
-              accessibilityRole: "button",
-              accessibilityLabel: item.label,
-              onPress: function () {
-                hideCharacterActionSheet(props.sheetKey);
-                if (typeof item.onPress === "function") item.onPress();
-              },
-              style: {
-                minHeight: 68,
-                paddingHorizontal: 16,
-                flexDirection: "row",
-                alignItems: "center",
-                borderBottomWidth:
-                  itemIndex === items.length - 1 ? 0 : 1,
-                borderBottomColor: "#2b2d31"
-              }
-            },
-            avatar,
-            React.createElement(
-              RN.Text,
-              {
-                style: {
-                  color: "white",
-                  fontSize: 17,
-                  fontWeight: "600",
-                  flex: 1,
-                  marginLeft: 12
-                }
-              },
-              item.label
-            ),
-            item.selected
-              ? React.createElement(
-                  RN.Text,
-                  {
-                    style: {
-                      color: "#b5bac1",
-                      fontSize: 22,
-                      fontWeight: "700"
-                    }
-                  },
-                  "✓"
-                )
-              : null
-          )
-        );
-      })(items[index], index);
+      listChildren.push(
+        React.createElement(ImageChoiceRow, {
+          key: "choice-" + String(items[index].key || index),
+          item: items[index],
+          sheetKey: props.sheetKey,
+          isLast: index === items.length - 1
+        })
+      );
     }
 
     content = React.createElement(
@@ -2191,9 +2227,10 @@
     var current;
     var entries;
     var channel;
-    var iconPromises;
     var mainName;
     var mainIcon;
+    var items;
+    var index;
 
     try {
       if (!channelId || !isWantedChannel(channelId)) {
@@ -2206,70 +2243,69 @@
       channel = getChannel(channelId);
       mainName = mainAccountName();
       mainIcon = mainAccountPictureSource();
-      iconPromises = entries.map(function (entry) {
-        return resolveProxyIcon(entry, channelId);
-      });
-      Promise.all(iconPromises)
-        .then(function (icons) {
-          var items = [{
-            key: "main-account",
-            label: mainName + " (Main account)",
-            main: true,
-            icon: mainIcon,
-            initial: mainAccountInitial(),
-            selected: !current,
+      items = [{
+        key: "main-account",
+        label: mainName + " (Main account)",
+        main: true,
+        icon: mainIcon,
+        initial: mainAccountInitial(),
+        selected: !current,
+        onPress: function () {
+          selectProxyForChannel(channelId, "");
+          refreshSelector(refresh);
+          toast("PluralAuto: " + mainName + " selected.");
+        }
+      }];
+
+      for (index = 0; index < entries.length; index += 1) {
+        (function (entry) {
+          var app = scannedApplication(entry.applicationId);
+          var item = {
+            key: proxySelectionKey(entry),
+            label: entry.label + "  /" + entry.command,
+            icon:
+              cachedProxyIcon(entry, channelId) ||
+              (app && app.icon) ||
+              null,
+            initial: selectorInitial(entry),
+            selected:
+              Boolean(current) &&
+              proxySelectionKey(current) === proxySelectionKey(entry),
             onPress: function () {
-              selectProxyForChannel(channelId, "");
+              selectProxyForChannel(channelId, entry);
               refreshSelector(refresh);
-              toast("PluralAuto: " + mainName + " selected.");
+              toast("PluralAuto: " + entry.label + " selected.");
             }
-          }];
-          var index;
+          };
+          item.loadIcon = function () {
+            return resolveProxyIcon(entry, channelId).then(function (source) {
+              if (source) item.icon = source;
+              return source;
+            });
+          };
+          items.push(item);
+        })(entries[index]);
+      }
 
-          for (index = 0; index < entries.length; index += 1) {
-            (function (entry, icon) {
-              items.push({
-                key: proxySelectionKey(entry),
-                label: entry.label + "  /" + entry.command,
-                icon: icon,
-                initial: selectorInitial(entry),
-                selected:
-                  Boolean(current) &&
-                  proxySelectionKey(current) === proxySelectionKey(entry),
-                onPress: function () {
-                  selectProxyForChannel(channelId, entry);
-                  refreshSelector(refresh);
-                  toast("PluralAuto: " + entry.label + " selected.");
-                }
-              });
-            })(entries[index], icons[index]);
-          }
+      if (!openImageChoiceSheet({
+        sheetKey: "PluralAutoCharacterPicker",
+        title: "PluralAuto character",
+        subtitle: channel && channel.name
+          ? String(channel.name)
+          : "Current DM",
+        items: items
+      })) {
+        toast("PluralAuto could not open the character selector.");
+        return false;
+      }
 
-          if (!openImageChoiceSheet({
-            sheetKey: "PluralAutoCharacterPicker",
-            title: "PluralAuto character",
-            subtitle: channel && channel.name
-              ? String(channel.name)
-              : "Current DM",
-            items: items
-          })) {
-            toast("PluralAuto could not open the character selector.");
-          }
-        })
-        .catch(function (error) {
-          toast("PluralAuto could not load the character selector.");
-          try {
-            if (
-              vendetta.logger &&
-              typeof vendetta.logger.error === "function"
-            ) {
-              vendetta.logger.error(
-                "PluralAuto character selector",
-                error
-              );
-            }
-          } catch (ignored) {}
-        });
+      for (index = 0; index < items.length; index += 1) {
+        if (typeof items[index].loadIcon === "function") {
+          Promise.resolve().then(items[index].loadIcon).catch(
+            function () {}
+          );
+        }
+      }
       return true;
     } catch (error) {
       toast("PluralAuto could not open the character selector.");
@@ -2388,6 +2424,98 @@
     );
   }
 
+  function isChannelSending(channelId) {
+    return Number(sendingChannels[String(channelId || "")] || 0) > 0;
+  }
+
+  function notifySendingListeners(channelId) {
+    var key = String(channelId || "");
+    var listeners = sendingListeners[key] || [];
+    var copy = listeners.slice();
+    var index;
+    for (index = 0; index < copy.length; index += 1) {
+      try { copy[index](); } catch (ignored) {}
+    }
+  }
+
+  function beginChannelSending(channelId) {
+    var key = String(channelId || "");
+    var finished = false;
+    sendingChannels[key] = Number(sendingChannels[key] || 0) + 1;
+    notifySendingListeners(key);
+    return function () {
+      if (finished) return;
+      finished = true;
+      sendingChannels[key] = Math.max(
+        0,
+        Number(sendingChannels[key] || 0) - 1
+      );
+      if (!sendingChannels[key]) delete sendingChannels[key];
+      notifySendingListeners(key);
+    };
+  }
+
+  function subscribeToChannelSending(channelId, listener) {
+    var key = String(channelId || "");
+    var listeners = sendingListeners[key];
+    if (!listeners) {
+      listeners = [];
+      sendingListeners[key] = listeners;
+    }
+    listeners.push(listener);
+    return function () {
+      var index = listeners.indexOf(listener);
+      if (index !== -1) listeners.splice(index, 1);
+      if (!listeners.length) delete sendingListeners[key];
+    };
+  }
+
+  function ProxySendButton(props) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var rerender = React.useState(0)[1];
+    var channelId = String(props.channelId || "");
+    var indicator;
+
+    React.useEffect(function () {
+      return subscribeToChannelSending(channelId, function () {
+        rerender(function (value) { return value + 1; });
+      });
+    }, [channelId]);
+
+    if (!isChannelSending(channelId)) return props.rendered;
+    indicator = RN.ActivityIndicator
+      ? React.createElement(RN.ActivityIndicator, {
+          size: "small",
+          color: "#5865f2"
+        })
+      : React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#5865f2",
+              fontSize: 22,
+              fontWeight: "700"
+            }
+          },
+          "…"
+        );
+    return React.createElement(
+      RN.View,
+      {
+        accessibilityRole: "progressbar",
+        accessibilityLabel: "Sending proxied message",
+        style: {
+          width: 44,
+          height: 44,
+          alignItems: "center",
+          justifyContent: "center"
+        }
+      },
+      indicator
+    );
+  }
+
   function wrapComposerActions(rendered, channelId) {
     var React = metro.common.React;
     var RN = metro.common.ReactNative;
@@ -2486,6 +2614,50 @@
     );
   }
 
+  function patchSendButtonTarget(target) {
+    return vendetta.patcher.instead(
+      "render",
+      target,
+      function (args, original) {
+        var props = args[0] || {};
+        var channelId = composerChannelId(props);
+        var rendered = original.apply(null, args);
+        if (
+          !channelId ||
+          !isWantedChannel(channelId) ||
+          !proxyForChannel(channelId)
+        ) {
+          return rendered;
+        }
+        return metro.common.React.createElement(ProxySendButton, {
+          channelId: channelId,
+          rendered: rendered
+        });
+      }
+    );
+  }
+
+  function attachSendButtonSpinner() {
+    var target;
+    try {
+      if (sendButtonUnpatch) return true;
+      resolveCore();
+      target = findComposerTarget("ChatInputSendButton");
+      if (!target) {
+        storage.sendButtonStatus =
+          "Waiting for Discord's send button.";
+        return false;
+      }
+      sendButtonUnpatch = patchSendButtonTarget(target);
+      storage.sendButtonStatus = "Ready (ChatInputSendButton)";
+      return true;
+    } catch (error) {
+      storage.sendButtonStatus =
+        "Error: " + (error.message || String(error));
+      return false;
+    }
+  }
+
   function attachComposerSelector() {
     var target;
     var targets = [];
@@ -2528,6 +2700,24 @@
       }
     } catch (ignored) {
       composerRetryTimer = setTimeout(retryComposerSelector, 3000);
+    }
+  }
+
+  function retrySendButtonSpinner() {
+    try {
+      if (sendButtonRetryTimer) clearTimeout(sendButtonRetryTimer);
+      sendButtonRetryTimer = null;
+      if (!attachSendButtonSpinner()) {
+        sendButtonRetryTimer = setTimeout(
+          retrySendButtonSpinner,
+          3000
+        );
+      }
+    } catch (ignored) {
+      sendButtonRetryTimer = setTimeout(
+        retrySendButtonSpinner,
+        3000
+      );
     }
   }
 
@@ -2636,6 +2826,8 @@
     var queuedForReply = false;
     var content;
     var applicationId;
+    var finishSending = null;
+    var operation;
 
     try {
       if (bypassNext) {
@@ -2663,7 +2855,8 @@
         return original.apply(null, args);
       }
 
-      return findCommand(
+      finishSending = beginChannelSending(channelId);
+      operation = findCommand(
         selectedCommand,
         channelId,
         1,
@@ -2739,7 +2932,18 @@
           }
           return handleProxyError(error, args, original);
         });
+      return Promise.resolve(operation).then(
+        function (result) {
+          finishSending();
+          return result;
+        },
+        function (error) {
+          finishSending();
+          throw error;
+        }
+      );
     } catch (error) {
+      if (finishSending) finishSending();
       return handleProxyError(error, args, original);
     }
   }
@@ -3484,6 +3688,12 @@
       if (!attachComposerSelector()) {
         composerRetryTimer = setTimeout(retryComposerSelector, 1500);
       }
+      if (!attachSendButtonSpinner()) {
+        sendButtonRetryTimer = setTimeout(
+          retrySendButtonSpinner,
+          1500
+        );
+      }
       if (!attachAndroidNotificationReplies()) {
         directReplyRetryTimer = setTimeout(
           retryAndroidNotificationReplies,
@@ -3508,38 +3718,48 @@
       composerRetryTimer = null;
     } catch (ignored2) {}
     try {
+      if (sendButtonRetryTimer) clearTimeout(sendButtonRetryTimer);
+      sendButtonRetryTimer = null;
+    } catch (ignored3) {}
+    try {
       if (directReplyRetryTimer) clearTimeout(directReplyRetryTimer);
       directReplyRetryTimer = null;
-    } catch (ignored3) {}
+    } catch (ignored4) {}
     try {
       if (typeof unpatch === "function") unpatch();
       unpatch = null;
-    } catch (ignored4) {}
+    } catch (ignored5) {}
     try {
       if (typeof receiveMessageUnpatch === "function") {
         receiveMessageUnpatch();
       }
       receiveMessageUnpatch = null;
-    } catch (ignored5) {}
+    } catch (ignored6) {}
     try {
       if (typeof directReplyRestore === "function") directReplyRestore();
       directReplyRestore = null;
-    } catch (ignored6) {}
+    } catch (ignored7) {}
+    try {
+      if (typeof sendButtonUnpatch === "function") sendButtonUnpatch();
+      sendButtonUnpatch = null;
+    } catch (ignored8) {}
     while (composerUnpatches.length) {
       cleanup = composerUnpatches.pop();
-      try { cleanup(); } catch (ignored7) {}
+      try { cleanup(); } catch (ignored9) {}
     }
     composerOwnerName = "";
     composerOwnerSeenAt = 0;
     while (temporaryUnpatches.length) {
       cleanup = temporaryUnpatches.pop();
-      try { cleanup(); } catch (ignored8) {}
+      try { cleanup(); } catch (ignored10) {}
     }
     applicationIconUtils = null;
     proxyIconCache = {};
     proxyIdentityCache = {};
     scannedApplications = [];
     applicationScanPromise = null;
+    sendingChannels = {};
+    sendingListeners = {};
     bypassNext = false;
   };
 
