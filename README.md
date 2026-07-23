@@ -1,4 +1,4 @@
-# PluralAuto v7.1.0
+# PluralAuto v7.2.0
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -6,6 +6,7 @@ It supports:
 
 - main-account sending by default in every unconfigured DM;
 - an explicit proxy selector for the current DM;
+- an in-composer character selector that replaces Discord's gift button in DMs;
 - a one-message bypass;
 - automatic Discord replies through /plu/ral's `queue_for_reply` and `Reply` commands;
 - attachment-only and text-plus-attachment messages, with up to 10 files;
@@ -42,6 +43,8 @@ Label | slash-command-name | text-option-name
 ```
 
 Do not include the leading `/`. Open a DM, return to the plugin settings, then use **Proxy selector - current DM** to choose its proxy. Choose **Main account (no proxy)** to clear that DM's proxy. Every unconfigured DM sends through your main account by default.
+
+In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between **Main account** and any configured proxy. The badge shows `ME` for the main account or the selected character's first letter. Server-channel gift buttons are left unchanged.
 
 If PluralAuto says it cannot find a command, open that slash command from Discord's command picker once in the affected DM. This lets Discord cache the command locally.
 
