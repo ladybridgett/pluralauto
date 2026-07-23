@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.3.0";
+  var VERSION = "7.4.0";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -21,6 +21,8 @@
   var temporaryUnpatches = [];
   var applicationIconUtils = null;
   var proxyIconCache = {};
+  var scannedApplications = [];
+  var applicationScanPromise = null;
 
   function textError(error) {
     if (!error) return "Unknown error";
@@ -49,12 +51,8 @@
 
     if (storage.enabled == null) storage.enabled = true;
     if (storage.messageOption == null) storage.messageOption = "message";
-    if (storage.commandLines == null) {
-      storage.commandLines =
-        "Proxy | proxy" +
-        " | " +
-        normalise(storage.messageOption || "message");
-    }
+    if (storage.commandLines == null) storage.commandLines = "";
+    ensureProxyStorage();
     if (storage.includeGroupDMs == null) storage.includeGroupDMs = false;
     if (storage.proxyReplies == null) storage.proxyReplies = true;
     if (storage.proxyAttachments == null) storage.proxyAttachments = true;
@@ -63,6 +61,7 @@
     if (storage.disabledChannels == null) storage.disabledChannels = {};
     storage.defaultCommand = "";
     storage.version = VERSION;
+    migrateChannelSelections();
   }
 
   function normalise(value) {
@@ -101,6 +100,132 @@
       });
     }
     return entries;
+  }
+
+  function storedProxyId(proxy, index) {
+    var applicationId = String(
+      proxy && (proxy.applicationId || proxy.application_id) || ""
+    );
+    var command = normalise(proxy && proxy.command);
+    if (proxy && proxy.id) return String(proxy.id);
+    if (applicationId) return "app:" + applicationId;
+    if (command) return "legacy:" + command;
+    return "proxy:" + String(index == null ? Date.now() : index);
+  }
+
+  function normaliseStoredProxy(proxy, index) {
+    var value = proxy && typeof proxy === "object" ? proxy : {};
+    var command = normalise(value.command);
+    var applicationId = String(
+      value.applicationId || value.application_id || ""
+    );
+    return {
+      id: storedProxyId(value, index),
+      applicationId: applicationId,
+      label: String(
+        value.label ||
+        value.name ||
+        (command ? "/" + command : "New proxy")
+      ),
+      command: command,
+      option: normalise(value.option || storage.messageOption) || "message"
+    };
+  }
+
+  function syncLegacyProxyLines() {
+    var proxies = Array.isArray(storage.proxies) ? storage.proxies : [];
+    var lines = [];
+    var index;
+    var proxy;
+    for (index = 0; index < proxies.length; index += 1) {
+      proxy = normaliseStoredProxy(proxies[index], index);
+      lines.push(
+        proxy.label +
+        " | " +
+        proxy.command +
+        " | " +
+        proxy.option
+      );
+    }
+    storage.commandLines = lines.join("\n");
+  }
+
+  function ensureProxyStorage() {
+    var legacy;
+    var proxies = [];
+    var index;
+    if (!Array.isArray(storage.proxies)) {
+      legacy = parseProxyLines(storage.commandLines);
+      for (index = 0; index < legacy.length; index += 1) {
+        proxies.push(normaliseStoredProxy(legacy[index], index));
+      }
+      storage.proxies = proxies;
+      syncLegacyProxyLines();
+      return;
+    }
+    for (index = 0; index < storage.proxies.length; index += 1) {
+      proxies.push(normaliseStoredProxy(storage.proxies[index], index));
+    }
+    storage.proxies = proxies;
+  }
+
+  function proxyEntries() {
+    var entries = [];
+    var seen = {};
+    var index;
+    var proxy;
+    var key;
+    ensureProxyStorage();
+    for (index = 0; index < storage.proxies.length; index += 1) {
+      proxy = normaliseStoredProxy(storage.proxies[index], index);
+      if (!proxy.command) continue;
+      key = normalise(proxy.id);
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+      entries.push(proxy);
+    }
+    return entries;
+  }
+
+  function proxySelectionKey(proxy) {
+    if (!proxy) return "";
+    return normalise(proxy.id || proxy.command);
+  }
+
+  function migrateChannelSelections() {
+    var entries;
+    var channelIds;
+    var channelIndex;
+    var entryIndex;
+    var selected;
+    var hasExact;
+    if (
+      !storage.channelCommands ||
+      typeof storage.channelCommands !== "object"
+    ) {
+      return;
+    }
+    entries = proxyEntries();
+    channelIds = Object.keys(storage.channelCommands);
+    for (channelIndex = 0; channelIndex < channelIds.length; channelIndex += 1) {
+      selected = normalise(storage.channelCommands[channelIds[channelIndex]]);
+      if (!selected) continue;
+      hasExact = false;
+      for (entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+        if (proxySelectionKey(entries[entryIndex]) === selected) {
+          hasExact = true;
+          break;
+        }
+      }
+      if (hasExact) continue;
+      for (entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+        if (entries[entryIndex].command === selected) {
+          storage.channelCommands[channelIds[channelIndex]] =
+            proxySelectionKey(entries[entryIndex]);
+          break;
+        }
+      }
+    }
   }
 
   function diagnosticText() {
@@ -634,8 +759,12 @@
   }
 
   function proxyIconKey(proxy, channelId) {
-    return String(channelId || "") + ":" + normalise(
-      proxy && proxy.command
+    return (
+      String(channelId || "") +
+      ":" +
+      String(proxy && proxy.applicationId || "") +
+      ":" +
+      normalise(proxy && proxy.command)
     );
   }
 
@@ -656,7 +785,12 @@
     if (cached && cached.promise) return cached.promise;
 
     record = { source: null, promise: null };
-    record.promise = findCommand(proxy.command, channelId, 1, null)
+    record.promise = findCommand(
+      proxy.command,
+      channelId,
+      1,
+      proxy.applicationId || null
+    )
       .then(function (command) {
         record.source = applicationPictureSource(command);
         record.promise = null;
@@ -668,6 +802,328 @@
       });
     proxyIconCache[key] = record;
     return record.promise;
+  }
+
+  function valuesOf(value) {
+    var values = [];
+    var keys;
+    var index;
+    if (!value || typeof value !== "object") return values;
+    if (Array.isArray(value)) return value;
+    try {
+      keys = Object.keys(value);
+      for (index = 0; index < keys.length; index += 1) {
+        values.push(value[keys[index]]);
+      }
+    } catch (ignored) {}
+    return values;
+  }
+
+  function addScannedApplication(apps, descriptor, commands) {
+    var application;
+    var applicationId;
+    var existing;
+    var commandValues;
+    var index;
+    var name;
+    var pictureCommand;
+    if (!descriptor || typeof descriptor !== "object") return;
+    application = descriptor.application || {};
+    applicationId = String(application.id || descriptor.id || "");
+    if (!applicationId || applicationId === "-1") return;
+    name = String(
+      descriptor.name ||
+      application.name ||
+      (application.bot && application.bot.username) ||
+      applicationId
+    );
+    existing = apps[applicationId];
+    if (!existing) {
+      pictureCommand = {
+        applicationId: applicationId,
+        section: descriptor
+      };
+      existing = {
+        applicationId: applicationId,
+        label: name,
+        icon: applicationPictureSource(pictureCommand),
+        commands: []
+      };
+      apps[applicationId] = existing;
+    } else if (
+      existing.label === existing.applicationId &&
+      name !== applicationId
+    ) {
+      existing.label = name;
+    }
+    if (!existing.icon) {
+      pictureCommand = {
+        applicationId: applicationId,
+        section: descriptor
+      };
+      existing.icon = applicationPictureSource(pictureCommand);
+    }
+    commandValues = valuesOf(commands);
+    for (index = 0; index < commandValues.length; index += 1) {
+      if (
+        commandTypeOf(commandValues[index]) != null &&
+        commandTypeOf(commandValues[index]) !== 1
+      ) {
+        continue;
+      }
+      name = commandName(commandValues[index]);
+      if (name && existing.commands.indexOf(name) === -1) {
+        existing.commands.push(name);
+      }
+    }
+  }
+
+  function addScannedCommand(apps, command) {
+    var applicationId;
+    var descriptor;
+    if (!command || typeof command !== "object") return;
+    applicationId = commandApplicationId(command);
+    if (!applicationId) return;
+    descriptor =
+      command.section ||
+      {
+        id: applicationId,
+        name:
+          command.applicationName ||
+          command.application_name ||
+          applicationId,
+        icon:
+          command.applicationIcon ||
+          command.application_icon ||
+          null,
+        application: command.application
+      };
+    addScannedApplication(apps, descriptor, [command]);
+  }
+
+  function addScannedSource(apps, source) {
+    var descriptors;
+    var commands;
+    var sections;
+    var sectioned;
+    var index;
+    if (!source || typeof source !== "object") return;
+    if (source.result && source.result !== source) {
+      addScannedSource(apps, source.result);
+    }
+    if (source.descriptor) {
+      addScannedApplication(
+        apps,
+        source.descriptor,
+        source.commands || source.data
+      );
+    }
+    descriptors = valuesOf(source.descriptors);
+    for (index = 0; index < descriptors.length; index += 1) {
+      addScannedApplication(apps, descriptors[index], null);
+    }
+    commands = valuesOf(source.commands);
+    for (index = 0; index < commands.length; index += 1) {
+      addScannedCommand(apps, commands[index]);
+    }
+    sectioned = valuesOf(source.sectionedCommands);
+    for (index = 0; index < sectioned.length; index += 1) {
+      if (!sectioned[index]) continue;
+      addScannedApplication(
+        apps,
+        sectioned[index].section || sectioned[index].descriptor,
+        sectioned[index].data || sectioned[index].commands
+      );
+    }
+    sections = valuesOf(source.sections);
+    for (index = 0; index < sections.length; index += 1) {
+      addScannedSource(apps, sections[index]);
+    }
+  }
+
+  function scannedAppList(apps) {
+    var result = valuesOf(apps);
+    result.sort(function (left, right) {
+      return String(left.label || "").localeCompare(
+        String(right.label || "")
+      );
+    });
+    return result;
+  }
+
+  function scanApplicationsOnce(channelId) {
+    var apps = {};
+    var channel;
+    var context;
+    var result;
+    var states;
+    var loading = false;
+    var key;
+    resolveCore();
+    if (!commandIndexStore && typeof metro.findByStoreName === "function") {
+      try {
+        commandIndexStore = metro.findByStoreName(
+          "ApplicationCommandIndexStore"
+        );
+      } catch (ignored) {}
+    }
+    if (!commandIndexStore) {
+      return { apps: [], loading: false };
+    }
+
+    try {
+      if (typeof commandIndexStore.getUserState === "function") {
+        addScannedSource(apps, commandIndexStore.getUserState());
+      }
+    } catch (ignored2) {}
+
+    if (channelId) {
+      try { channel = getChannel(channelId); } catch (ignored3) {}
+    }
+    context = channel
+      ? { type: "channel", channel: channel }
+      : { type: "contextless" };
+    try {
+      if (typeof commandIndexStore.query === "function") {
+        result = commandIndexStore.query(
+          context,
+          {
+            commandTypes: [1],
+            text: "",
+            applicationCommands: true
+          },
+          {
+            allowFetch: true,
+            allowApplicationState: true,
+            allowEmptySections: false
+          }
+        );
+        addScannedSource(apps, result);
+        loading = Boolean(result && result.loading);
+      }
+    } catch (ignored4) {}
+    try {
+      if (typeof commandIndexStore.getContextState === "function") {
+        addScannedSource(
+          apps,
+          commandIndexStore.getContextState(context)
+        );
+      }
+    } catch (ignored5) {}
+
+    try {
+      if (
+        typeof commandIndexStore.getApplicationStates === "function"
+      ) {
+        states = commandIndexStore.getApplicationStates();
+        if (states && typeof states.forEach === "function") {
+          states.forEach(function (state) {
+            addScannedSource(apps, state);
+          });
+        } else if (states && typeof states === "object") {
+          for (key in states) {
+            if (Object.prototype.hasOwnProperty.call(states, key)) {
+              addScannedSource(apps, states[key]);
+            }
+          }
+        }
+      }
+    } catch (ignored6) {}
+
+    return { apps: scannedAppList(apps), loading: loading };
+  }
+
+  function scanAddedApplications(channelId) {
+    var first;
+    if (applicationScanPromise) return applicationScanPromise;
+    try {
+      first = scanApplicationsOnce(channelId);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    applicationScanPromise = (
+      first.loading
+        ? delay(900).then(function () {
+            return scanApplicationsOnce(channelId).apps;
+          })
+        : Promise.resolve(first.apps)
+    ).then(function (apps) {
+      scannedApplications = apps;
+      applicationScanPromise = null;
+      return apps;
+    }).catch(function (error) {
+      applicationScanPromise = null;
+      throw error;
+    });
+    return applicationScanPromise;
+  }
+
+  function scannedApplication(applicationId) {
+    var wanted = String(applicationId || "");
+    var index;
+    for (index = 0; index < scannedApplications.length; index += 1) {
+      if (scannedApplications[index].applicationId === wanted) {
+        return scannedApplications[index];
+      }
+    }
+    return null;
+  }
+
+  function openAddedApplicationPicker(channelId, onSelect) {
+    var sheetModule;
+    var showSheet;
+    try {
+      sheetModule = metro.findByProps("showSimpleActionSheet");
+      showSheet = sheetModule && sheetModule.showSimpleActionSheet;
+      if (typeof showSheet !== "function") {
+        toast("PluralAuto could not open the app dropdown.");
+        return false;
+      }
+      scanAddedApplications(channelId)
+        .then(function (apps) {
+          var options = [];
+          var index;
+          var option;
+          if (!apps.length) {
+            toast(
+              "PluralAuto found no added apps. Open Discord's Apps picker once, then retry."
+            );
+            return;
+          }
+          for (index = 0; index < apps.length; index += 1) {
+            (function (app) {
+              option = {
+                label: app.label,
+                onPress: function () {
+                  if (typeof onSelect === "function") onSelect(app);
+                  hideCharacterActionSheet();
+                }
+              };
+              if (app.icon) option.icon = app.icon;
+              options.push(option);
+            })(apps[index]);
+          }
+          showSheet({
+            key: "CardOverflow",
+            header: {
+              title: "Choose an added app",
+              subtitle: "Discord apps available to your account",
+              onClose: hideCharacterActionSheet
+            },
+            options: options
+          });
+        })
+        .catch(function (error) {
+          toast(
+            "PluralAuto could not scan Discord's added apps: " +
+            (error.message || String(error))
+          );
+        });
+      return true;
+    } catch (error) {
+      toast("PluralAuto could not open the app dropdown.");
+      return false;
+    }
   }
 
   function executorIn(value, depth, seen) {
@@ -1140,20 +1596,29 @@
     wanted = normalise(selected);
     if (!wanted) return null;
 
-    entries = parseProxyLines(storage.commandLines);
+    entries = proxyEntries();
+    for (index = 0; index < entries.length; index += 1) {
+      if (proxySelectionKey(entries[index]) === wanted) {
+        return entries[index];
+      }
+    }
     for (index = 0; index < entries.length; index += 1) {
       if (entries[index].command === wanted) return entries[index];
     }
 
     return {
+      id: "legacy:" + wanted,
+      applicationId: "",
       label: "/" + wanted,
       command: wanted,
       option: normalise(storage.messageOption) || "message"
     };
   }
 
-  function selectProxyForChannel(channelId, command) {
-    var wanted = normalise(command);
+  function selectProxyForChannel(channelId, proxy) {
+    var wanted = proxy && typeof proxy === "object"
+      ? proxySelectionKey(proxy)
+      : normalise(proxy);
     if (!channelId) return;
     if (!wanted) {
       delete storage.channelCommands[channelId];
@@ -1234,7 +1699,7 @@
       }
 
       current = proxyForChannel(channelId);
-      entries = parseProxyLines(storage.commandLines);
+      entries = proxyEntries();
       channel = getChannel(channelId);
       iconPromises = entries.map(function (entry) {
         return resolveProxyIcon(entry, channelId);
@@ -1257,12 +1722,15 @@
             (function (entry, icon) {
               option = {
                 label:
-                  (current && current.command === entry.command ? "✓ " : "") +
+                  (current &&
+                  proxySelectionKey(current) === proxySelectionKey(entry)
+                    ? "✓ "
+                    : "") +
                   entry.label +
                   "  /" +
                   entry.command,
                 onPress: function () {
-                  selectProxyForChannel(channelId, entry.command);
+                  selectProxyForChannel(channelId, entry);
                   refreshSelector(refresh);
                   hideCharacterActionSheet();
                   toast("PluralAuto: " + entry.label + " selected.");
@@ -1689,7 +2157,12 @@
         return original.apply(null, args);
       }
 
-      return findCommand(selectedCommand, channelId, 1, null)
+      return findCommand(
+        selectedCommand,
+        channelId,
+        1,
+        selectedProxy.applicationId || null
+      )
         .then(function (command) {
           if (!command) {
             throw new Error(
@@ -1841,12 +2314,17 @@
     var rerender = rerenderState[1];
     var style = styles();
     var children = [];
-    var entries = parseProxyLines(storage.commandLines);
+    var entries = proxyEntries();
+    var storedProxies = storage.proxies;
     var selectedStore = getSelectedChannelStore();
     var channelId = null;
     var channel = null;
     var channelSelection = null;
     var index;
+
+    function invalidateProxyImages() {
+      proxyIconCache = {};
+    }
 
     function refresh() {
       rerender(function (value) { return value + 1; });
@@ -1925,6 +2403,230 @@
           RN.Text,
           { style: style.buttonText },
           text
+        )
+      );
+    }
+
+    function proxyIsSelected(entry) {
+      var selected = normalise(channelSelection);
+      return (
+        selected === proxySelectionKey(entry) ||
+        selected === entry.command
+      );
+    }
+
+    function appAlreadyAdded(applicationId, exceptIndex) {
+      var appId = String(applicationId || "");
+      var proxyIndex;
+      for (proxyIndex = 0; proxyIndex < storedProxies.length; proxyIndex += 1) {
+        if (proxyIndex === exceptIndex) continue;
+        if (
+          String(storedProxies[proxyIndex].applicationId || "") === appId
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function chooseProxyApp(proxyIndex) {
+      openAddedApplicationPicker(channelId, function (app) {
+        var command;
+        var proxy;
+        if (appAlreadyAdded(app.applicationId, proxyIndex)) {
+          toast("PluralAuto: that app is already in your proxy list.");
+          return;
+        }
+        command = app.commands && app.commands.length
+          ? app.commands[0]
+          : "";
+        if (proxyIndex == null) {
+          proxy = {
+            id:
+              "proxy:" +
+              app.applicationId +
+              ":" +
+              String(Date.now()),
+            applicationId: app.applicationId,
+            label: app.label,
+            command: command,
+            option: normalise(storage.messageOption) || "message"
+          };
+          storedProxies.push(proxy);
+        } else {
+          proxy = storedProxies[proxyIndex];
+          proxy.applicationId = app.applicationId;
+          proxy.label = app.label;
+          if (!normalise(proxy.command)) proxy.command = command;
+        }
+        syncLegacyProxyLines();
+        invalidateProxyImages();
+        refresh();
+      });
+    }
+
+    function updateProxyCommand(proxyIndex, value) {
+      if (!storedProxies[proxyIndex]) return;
+      storedProxies[proxyIndex].command = normalise(value);
+      syncLegacyProxyLines();
+      invalidateProxyImages();
+    }
+
+    function removeProxy(proxyIndex) {
+      var removed;
+      var removedKey;
+      var channelIds;
+      var channelIndex;
+      if (!storedProxies[proxyIndex]) return;
+      removed = normaliseStoredProxy(
+        storedProxies[proxyIndex],
+        proxyIndex
+      );
+      removedKey = proxySelectionKey(removed);
+      storedProxies.splice(proxyIndex, 1);
+      channelIds = Object.keys(storage.channelCommands);
+      for (channelIndex = 0; channelIndex < channelIds.length; channelIndex += 1) {
+        if (
+          normalise(storage.channelCommands[channelIds[channelIndex]]) ===
+            removedKey ||
+          normalise(storage.channelCommands[channelIds[channelIndex]]) ===
+            removed.command
+        ) {
+          delete storage.channelCommands[channelIds[channelIndex]];
+          storage.disabledChannels[channelIds[channelIndex]] = true;
+        }
+      }
+      syncLegacyProxyLines();
+      invalidateProxyImages();
+      refresh();
+    }
+
+    function proxyCard(entry, proxyIndex) {
+      var app = scannedApplication(entry.applicationId);
+      var icon =
+        (app && app.icon) ||
+        (channelId ? cachedProxyIcon(entry, channelId) : null);
+      var badge;
+      var appLabel = entry.applicationId
+        ? entry.label
+        : "Choose an added app";
+      var appHint = entry.applicationId
+        ? "Tap to change app"
+        : "Legacy proxy — tap to link it";
+
+      badge = icon && RN.Image
+        ? React.createElement(RN.Image, {
+            source: icon,
+            resizeMode: "cover",
+            style: {
+              width: 40,
+              height: 40,
+              borderRadius: 20
+            }
+          })
+        : React.createElement(
+            RN.View,
+            {
+              style: {
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                backgroundColor: "#5865f2",
+                alignItems: "center",
+                justifyContent: "center"
+              }
+            },
+            React.createElement(
+              RN.Text,
+              {
+                style: {
+                  color: "white",
+                  fontSize: 16,
+                  fontWeight: "700"
+                }
+              },
+              selectorInitial(entry)
+            )
+          );
+
+      return React.createElement(
+        RN.View,
+        {
+          key: "proxy-card-" + entry.id,
+          style: style.card
+        },
+        React.createElement(
+          RN.Pressable,
+          {
+            accessibilityRole: "button",
+            accessibilityLabel: "Choose app for " + entry.label,
+            onPress: function () { chooseProxyApp(proxyIndex); },
+            style: {
+              flexDirection: "row",
+              alignItems: "center",
+              paddingBottom: 10
+            }
+          },
+          badge,
+          React.createElement(
+            RN.View,
+            { style: { flex: 1, marginLeft: 10 } },
+            React.createElement(
+              RN.Text,
+              { style: { color: "white", fontWeight: "700" } },
+              appLabel
+            ),
+            React.createElement(
+              RN.Text,
+              { style: { color: "#b5bac1", fontSize: 12, marginTop: 2 } },
+              appHint
+            )
+          ),
+          React.createElement(
+            RN.Text,
+            { style: { color: "#b5bac1", fontSize: 22 } },
+            "›"
+          )
+        ),
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#b5bac1",
+              fontSize: 12,
+              marginBottom: 6
+            }
+          },
+          "Slash command"
+        ),
+        input(
+          entry.command,
+          "proxy",
+          function (value) {
+            updateProxyCommand(proxyIndex, value);
+          },
+          "proxy-command-" + entry.id,
+          false
+        ),
+        !entry.command
+          ? React.createElement(
+              RN.Text,
+              {
+                style: {
+                  color: "#f0b232",
+                  fontSize: 12,
+                  marginTop: 6
+                }
+              },
+              "Enter this app's userproxy command."
+            )
+          : null,
+        button(
+          "Remove proxy",
+          function () { removeProxy(proxyIndex); },
+          false,
+          true,
+          "remove-proxy-" + entry.id
         )
       );
     }
@@ -2024,16 +2726,33 @@
       React.createElement(
         RN.Text,
         { key: "format", style: style.muted },
-        "One per line: Label | command | message option"
+        "Add one of your Discord apps, then enter its userproxy slash command."
       )
     );
-    children.push(input(
-      storage.commandLines,
-      "Alice | alice | message\nBob | bob | message",
-      function (value) { storage.commandLines = value; },
-      "command-lines",
-      true
+    children.push(button(
+      "+ Add proxy",
+      function () { chooseProxyApp(null); },
+      true,
+      false,
+      "add-proxy"
     ));
+    if (!storedProxies.length) {
+      children.push(
+        React.createElement(
+          RN.Text,
+          { key: "no-proxies", style: style.muted },
+          "No proxies added yet."
+        )
+      );
+    }
+    for (index = 0; index < storedProxies.length; index += 1) {
+      children.push(
+        proxyCard(
+          normaliseStoredProxy(storedProxies[index], index),
+          index
+        )
+      );
+    }
 
     children.push(switchRow(
       "Enable automatic proxying",
@@ -2113,14 +2832,14 @@
           children.push(button(
             entry.label + "  /" + entry.command,
             function () {
-              storage.channelCommands[channelId] = entry.command;
+              storage.channelCommands[channelId] = proxySelectionKey(entry);
               storage.disabledChannels[channelId] = false;
               refresh();
             },
             storage.disabledChannels[channelId] !== true &&
-              normalise(channelSelection) === entry.command,
+              proxyIsSelected(entry),
             false,
-            "channel-" + entry.command
+            "channel-" + entry.id
           ));
         })(entries[index]);
       }
@@ -2193,6 +2912,8 @@
     }
     applicationIconUtils = null;
     proxyIconCache = {};
+    scannedApplications = [];
+    applicationScanPromise = null;
     bypassNext = false;
   };
 
