@@ -67,7 +67,7 @@ test("v6 retains the syntax level proven by the v4 loader test", () => {
   assert.doesNotMatch(source, /=>|\b(?:const|let|class)\b|\?\.|\?\?|\.\.\./);
 });
 
-test("v7 manifest hash matches its profile and notification bundle", () => {
+test("v7 manifest hash matches its performance and progress bundle", () => {
   const root = path.join(__dirname, "..", "v7");
   const source = fs.readFileSync(path.join(root, "index.js"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
@@ -516,12 +516,14 @@ function createV7Harness(options = {}) {
   const storage = options.storage || {};
   const calls = {
     executor: [],
+    executorResolvers: [],
     original: [],
     toast: [],
     dispatch: [],
     bridgedUploads: [],
     query: [],
     composer: [],
+    sendButton: [],
     actionSheets: [],
     lazySheets: [],
     applicationIcons: [],
@@ -605,6 +607,19 @@ function createV7Harness(options = {}) {
           type: "DiscordChatInputActions",
           props: {},
           children: ["Discord actions"],
+        };
+      },
+    },
+  };
+  const ChatInputSendButton = {
+    type: {
+      displayName: "ChatInputSendButton",
+      render(props) {
+        calls.sendButton.push({ ...props });
+        return {
+          type: "DiscordChatInputSendButton",
+          props: {},
+          children: ["Send"],
         };
       },
     },
@@ -721,6 +736,14 @@ function createV7Harness(options = {}) {
         lifecycle.onSuccess();
       }
     }
+    if (
+      options.deferExecutor &&
+      !payload.interactionLifecycleOptionsFactory
+    ) {
+      return new Promise((resolve) => {
+        calls.executorResolvers.push(resolve);
+      });
+    }
   }
 
   const vendetta = {
@@ -757,7 +780,7 @@ function createV7Harness(options = {}) {
         },
         ReactNative: {
           View() {}, Text() {}, TextInput() {}, Pressable() {}, TouchableOpacity() {},
-          ScrollView() {}, Switch() {}, Image() {},
+          ScrollView() {}, Switch() {}, Image() {}, ActivityIndicator() {},
           Dimensions: {
             get() {
               return { width: 400, height: 800 };
@@ -871,7 +894,11 @@ function createV7Harness(options = {}) {
       },
       findByName() {},
       find(filter) {
-        const candidates = [ChatInputActions, { A: modernExecutor }];
+        const candidates = [
+          ChatInputActions,
+          ChatInputSendButton,
+          { A: modernExecutor },
+        ];
         return candidates.find((exports) => filter(exports));
       },
       modules: {
@@ -896,6 +923,13 @@ function createV7Harness(options = {}) {
     return ChatInputActions.type.render({
       channel,
       shouldShowGiftButton: true,
+      ...props,
+    }, { current: {} });
+  }
+
+  function renderSendButton(props = {}) {
+    return ChatInputSendButton.type.render({
+      channel,
       ...props,
     }, { current: {} });
   }
@@ -926,6 +960,7 @@ function createV7Harness(options = {}) {
     replyCommand,
     send,
     renderComposerActions,
+    renderSendButton,
     storage,
     uploadStore,
   };
@@ -939,6 +974,14 @@ async function renderLazySheet(entry) {
 function findReactNode(node, predicate) {
   if (!node || typeof node !== "object") return null;
   if (predicate(node)) return node;
+  if (
+    typeof node.type === "function"
+    && node.type.name === "ImageChoiceRow"
+  ) {
+    const rendered = node.type(node.props);
+    const found = findReactNode(rendered, predicate);
+    if (found) return found;
+  }
   if (!Array.isArray(node.children)) return null;
   for (const child of node.children) {
     const found = findReactNode(child, predicate);
@@ -1139,7 +1182,7 @@ test("v7 renders enabled reply and attachment settings", () => {
   assert.match(JSON.stringify(tree), /Brigitte \(no proxy\)/);
   assert.match(JSON.stringify(tree), /\+ Add proxy/);
   assert.doesNotMatch(JSON.stringify(tree), /One per line/);
-  assert.equal(harness.storage.version, "7.5.0");
+  assert.equal(harness.storage.version, "7.6.0");
   assert.equal(harness.storage.defaultCommand, "");
   assert.equal(harness.storage.proxyReplies, true);
   assert.equal(harness.storage.proxyAttachments, true);
@@ -1367,6 +1410,34 @@ test("v7 routes Android notification replies through the DM's selected proxy", a
   assert.match(harness.storage.notificationReplyStatus, /Ready/);
 });
 
+test("v7 replaces the real send button with a spinner during proxy sends", async () => {
+  const harness = createV7Harness({ deferExecutor: true });
+  const pendingSend = harness.send({
+    content: "show the spinner",
+    attachments: [],
+  });
+  const wrappedWhileSending = harness.renderSendButton();
+  const loadingButton = wrappedWhileSending.type(
+    wrappedWhileSending.props,
+  );
+
+  assert.equal(
+    loadingButton.props.accessibilityLabel,
+    "Sending proxied message",
+  );
+  assert.equal(loadingButton.props.accessibilityRole, "progressbar");
+  assert.match(harness.storage.sendButtonStatus, /Ready/);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.executorResolvers.length, 1);
+  harness.calls.executorResolvers[0]();
+  await pendingSend;
+
+  const wrappedAfterSend = harness.renderSendButton();
+  const normalButton = wrappedAfterSend.type(wrappedAfterSend.props);
+  assert.equal(normalButton.type, "DiscordChatInputSendButton");
+});
+
 test("v7 replaces the DM gift action with an app-PFP character selector", async () => {
   const harness = createV7Harness({
     storage: {
@@ -1388,6 +1459,11 @@ test("v7 replaces the DM gift action with an app-PFP character selector", async 
   assert.equal(selectorButton.children[0].children[0].children[0], "É");
 
   selectorButton.props.onPress();
+  assert.equal(
+    harness.calls.lazySheets.length,
+    1,
+    "the selector should open before uncached app icons finish loading",
+  );
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.calls.lazySheets.length, 1);
   assert.equal(harness.calls.actionSheets.length, 0);
