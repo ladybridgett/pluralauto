@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.2.0 • Gift-button character selector, replies, and up to 10 attachments.",
+  "description": "Version 7.3.0 • App-PFP character selector, replies, and up to 10 attachments.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "3de31aa1d86d6c999984b73dde423d9029dbe0fbad924c4fb0ccca0909d989f8"
+  "hash": "cb0154a12d596f2343c296cfd047ab63f689a1f26bc663fbc9558ddfd7bda61d"
 }
