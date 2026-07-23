@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.4.1 • Full-color app PFPs in proxy and character pickers.",
+  "description": "Version 7.5.0 • Main profile, cleaner proxy messages, quieter notifications, and Android quick replies.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "7dd9a4767fbc68423486e8ea99a0fbac563225d027dbe92ba3f9adaddb37f6b8"
+  "hash": "a5502561dc6506a822efa2120986603410aec778ec1ca052efc62016c1f9efff"
 }
