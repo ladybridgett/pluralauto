@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.5.0 • Main profile, cleaner proxy messages, quieter notifications, and Android quick replies.",
+  "description": "Version 7.6.0 • Instant proxy picker with asynchronous PFPs and a send-progress spinner.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "a5502561dc6506a822efa2120986603410aec778ec1ca052efc62016c1f9efff"
+  "hash": "d84f24339f2f1d31f3176c22c01894025e3e318f2d0984428d5d2683270de5be"
 }
