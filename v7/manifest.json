@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.1 • First-open switcher speed fix, persistent PFP cache, and send-progress spinner.",
+  "description": "Version 7.6.2 • Visible send spinner, first-open switcher speed fix, and persistent PFP cache.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "19de857b9a19ed6c6f6b587bb3fca02eb53d11b9371f39f231021a0a34908d7f"
+  "hash": "415172befece04fad244d79a4b9a45a5421709c4c7eadfc159fa7366ad4b98bf"
 }
