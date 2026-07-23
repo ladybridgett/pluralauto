@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.1.0 • Opt-in per-DM proxy selector, replies, and up to 10 attachments.",
+  "description": "Version 7.2.0 • Gift-button character selector, replies, and up to 10 attachments.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "e6534cb35060b91ab3d18450a6e6c16041361e4435ed721bbc0ded8339a9ba12"
+  "hash": "3de31aa1d86d6c999984b73dde423d9029dbe0fbad924c4fb0ccca0909d989f8"
 }
