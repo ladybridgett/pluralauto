@@ -1,4 +1,4 @@
-# PluralAuto v7.6.0
+# PluralAuto v7.6.1
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -8,7 +8,8 @@ It supports:
 - a scanned Discord-app proxy list with per-proxy command fields;
 - an explicit proxy selector for the current DM;
 - an instant-opening app-PFP character selector that replaces Discord's gift button in DMs;
-- asynchronous PFP loading, so uncached icons never block the selector;
+- staggered PFP loading after the first paint, so uncached icons never block the selector;
+- persistent PFP caching across Discord restarts;
 - a loading spinner on Discord's send button while a proxy command runs;
 - your signed-in Discord name and avatar on the Main account selector;
 - a one-message bypass;
@@ -49,7 +50,7 @@ Existing line-based configurations from v7.3 and earlier are migrated into the l
 
 Open a DM, return to the plugin settings, then use **Proxy selector - current DM** to choose its proxy. Choose **Main account (no proxy)** to clear that DM's proxy. Every unconfigured DM sends through your main account by default.
 
-In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between your main account and any configured proxy. The picker opens immediately with cached PFPs or initials; any uncached application PFPs fill in asynchronously without delaying the menu. The main-account row uses your signed-in Discord display name and avatar. PluralAuto shows full-color, untinted images in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an avatar is unavailable, the badge falls back to the account or character's first letter. Server-channel gift buttons are left unchanged.
+In a DM, tap the character badge where Discord's gift button normally appears to switch instantly between your main account and any configured proxy. PluralAuto warms the picker modules when the plugin loads, then opens the sheet without starting icon lookups in that same render turn. Cached PFPs or initials appear immediately; uncached application PFPs load one row at a time after the first paint and are saved with the proxy for later Discord launches. The main-account row uses your signed-in Discord display name and avatar. PluralAuto shows full-color, untinted images in both the picker and composer badge. The added-app dropdown uses the same circular PFP rows. If an avatar is unavailable, the badge falls back to the account or character's first letter. Server-channel gift buttons are left unchanged.
 
 If PluralAuto says it cannot find a command, open that slash command from Discord's command picker once in the affected DM. This lets Discord cache the command locally.
 
