@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.3";
+  var VERSION = "7.6.4";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -2590,20 +2590,119 @@
     };
   }
 
+  function findSendButtonPress(rendered) {
+    var React = metro.common.React;
+    var found = null;
+
+    function visit(node) {
+      var props;
+      if (found || node == null) return;
+      if (Array.isArray(node)) {
+        node.forEach(function (child) { visit(child); });
+        return;
+      }
+      if (!React.isValidElement(node)) return;
+      props = node.props || {};
+      if (typeof props.onPress === "function") {
+        found = {
+          onPress: props.onPress,
+          disabled: props.disabled === true,
+          accessibilityLabel: props.accessibilityLabel || "Send message"
+        };
+        return;
+      }
+      React.Children.forEach(props.children, function (child) {
+        visit(child);
+      });
+    }
+
+    visit(rendered);
+    return found;
+  }
+
+  function afterSpinnerPaint(callback) {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(callback);
+      });
+      return;
+    }
+    setTimeout(callback, 20);
+  }
+
   function ProxySendButton(props) {
     var React = metro.common.React;
     var RN = metro.common.ReactNative;
-    var rerender = React.useState(0)[1];
     var channelId = String(props.channelId || "");
+    var loadingState = React.useState(isChannelSending(channelId));
+    var loading = loadingState[0];
+    var setLoading = loadingState[1];
+    var pressInfo = findSendButtonPress(props.rendered);
     var indicator;
 
     React.useEffect(function () {
+      setLoading(isChannelSending(channelId));
       return subscribeToChannelSending(channelId, function () {
-        rerender(function (value) { return value + 1; });
+        setLoading(isChannelSending(channelId));
       });
     }, [channelId]);
 
-    if (!isChannelSending(channelId)) return props.rendered;
+    if (!loading && !isChannelSending(channelId)) {
+      if (!pressInfo || !RN.Pressable) return props.rendered;
+      return React.createElement(
+        RN.Pressable,
+        {
+          accessibilityRole: "button",
+          accessibilityLabel: pressInfo.accessibilityLabel,
+          disabled: pressInfo.disabled,
+          android_ripple: null,
+          onPress: function (event) {
+            var pressToken = primePressedSending(channelId);
+            if (event && typeof event.persist === "function") {
+              event.persist();
+            }
+            setLoading(true);
+            afterSpinnerPaint(function () {
+              try {
+                pressInfo.onPress(event);
+              } catch (error) {
+                cancelPressedSending(channelId, pressToken);
+                setLoading(false);
+                setStatus(
+                  "Send button error",
+                  error.message || String(error),
+                  error
+                );
+                toast(
+                  "PluralAuto could not start sending: " +
+                  (error.message || error)
+                );
+              }
+            });
+          },
+          style: {
+            width: 44,
+            height: 44,
+            alignItems: "center",
+            justifyContent: "center"
+          }
+        },
+        React.createElement(
+          RN.View,
+          {
+            pointerEvents: "none",
+            style: {
+              width: 44,
+              height: 44,
+              alignItems: "center",
+              justifyContent: "center"
+            }
+          },
+          props.rendered
+        )
+      );
+    }
+
     indicator = RN.ActivityIndicator
       ? React.createElement(RN.ActivityIndicator, {
           size: "small",
@@ -2648,110 +2747,6 @@
         indicator
       )
     );
-  }
-
-  function wrapSendButtonPress(rendered, channelId) {
-    var React = metro.common.React;
-    var wrapped = false;
-
-    function visit(node) {
-      var props;
-      var originalOnPress;
-      var originalOnPressIn;
-      var originalOnPressOut;
-      var originalStyle;
-      var replacementProps;
-      var children;
-      var pressToken = null;
-
-      if (wrapped || node == null) return node;
-      if (Array.isArray(node)) {
-        return node.map(function (child) { return visit(child); });
-      }
-      if (!React.isValidElement(node)) return node;
-
-      props = node.props || {};
-      if (typeof props.onPress === "function") {
-        wrapped = true;
-        originalOnPress = props.onPress;
-        originalOnPressIn = props.onPressIn;
-        originalOnPressOut = props.onPressOut;
-        originalStyle = props.style;
-
-        function ensurePressedSending() {
-          if (!pressToken) {
-            pressToken = primePressedSending(channelId);
-          }
-          return pressToken;
-        }
-
-        replacementProps = {
-          android_ripple: null,
-          onPressIn: function () {
-            if (typeof originalOnPressIn === "function") {
-              return originalOnPressIn.apply(this, arguments);
-            }
-          },
-          onPress: function () {
-            var context = this;
-            var pressArguments = arguments;
-            ensurePressedSending();
-            if (
-              pressArguments[0] &&
-              typeof pressArguments[0].persist === "function"
-            ) {
-              pressArguments[0].persist();
-            }
-            setTimeout(function () {
-              try {
-                originalOnPress.apply(context, pressArguments);
-              } catch (error) {
-                cancelPressedSending(channelId, pressToken);
-                setStatus(
-                  "Send button error",
-                  error.message || String(error),
-                  error
-                );
-                toast(
-                  "PluralAuto could not start sending: " +
-                  (error.message || error)
-                );
-              }
-            }, 0);
-          },
-          onPressOut: function () {
-            var context = this;
-            var pressArguments = arguments;
-            var result;
-            if (typeof originalOnPressOut === "function") {
-              result = originalOnPressOut.apply(context, pressArguments);
-            }
-            setTimeout(function () {
-              cancelPressedSending(channelId, pressToken);
-            }, 250);
-            return result;
-          }
-        };
-        if (typeof originalStyle === "function") {
-          replacementProps.style = function (state) {
-            var unpressedState = Object.assign({}, state || {});
-            unpressedState.pressed = false;
-            return originalStyle(unpressedState);
-          };
-        }
-        return React.cloneElement(node, replacementProps);
-      }
-
-      if (props.children == null) return node;
-      children = React.Children.map(props.children, function (child) {
-        return visit(child);
-      });
-      return wrapped
-        ? React.cloneElement(node, null, children)
-        : node;
-    }
-
-    return visit(rendered);
   }
 
   function wrapComposerActions(rendered, channelId) {
@@ -2867,7 +2862,6 @@
         ) {
           return rendered;
         }
-        rendered = wrapSendButtonPress(rendered, channelId);
         return metro.common.React.createElement(ProxySendButton, {
           channelId: channelId,
           rendered: rendered
