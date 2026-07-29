@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.5";
+  var VERSION = "7.6.6";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -36,6 +36,7 @@
   var proxyIconCache = {};
   var proxyIdentityCache = {};
   var resolvedCommandCache = {};
+  var commandWarmups = {};
   var scannedApplications = [];
   var applicationScanPromise = null;
 
@@ -74,6 +75,12 @@
     if (storage.sendNormallyOnError == null) storage.sendNormallyOnError = false;
     if (storage.channelCommands == null) storage.channelCommands = {};
     if (storage.disabledChannels == null) storage.disabledChannels = {};
+    if (
+      !storage.commandHints ||
+      typeof storage.commandHints !== "object"
+    ) {
+      storage.commandHints = {};
+    }
     storage.defaultCommand = "";
     storage.version = VERSION;
     migrateChannelSelections();
@@ -619,6 +626,7 @@
     var commands = [];
     var seen = [];
     var loading = false;
+    var direct;
 
     if (!wanted) return { command: null, loading: false };
     if (!channel) return { command: null, loading: false };
@@ -631,6 +639,15 @@
       commands,
       seen
     );
+    direct = pickCommand(
+      commands,
+      wanted,
+      commandType,
+      applicationId
+    );
+    if (direct) {
+      return { command: direct, loading: loading };
+    }
     addLegacySources(channelId, commandType, commands, seen);
 
     return {
@@ -650,13 +667,36 @@
     });
   }
 
-  function findCommand(command, channelId, commandType, applicationId) {
-    var cacheKey = [
-      String(channelId || ""),
+  function resolvedCommandKey(command, commandType, applicationId) {
+    return [
       normalise(command),
       String(commandType == null ? "" : commandType),
       String(applicationId || "")
     ].join("|");
+  }
+
+  function rememberResolvedCommand(cacheKey, command) {
+    var hint;
+    if (!command) return command;
+    resolvedCommandCache[cacheKey] = command;
+    try {
+      hint = {
+        name: commandName(command),
+        type: commandTypeOf(command),
+        applicationId: commandApplicationId(command),
+        updatedAt: new Date().toISOString()
+      };
+      storage.commandHints[cacheKey] = hint;
+    } catch (ignored) {}
+    return command;
+  }
+
+  function findCommand(command, channelId, commandType, applicationId) {
+    var cacheKey = resolvedCommandKey(
+      command,
+      commandType,
+      applicationId
+    );
     var cached = resolvedCommandCache[cacheKey];
     var first;
     if (cached) return Promise.resolve(cached);
@@ -667,8 +707,9 @@
       applicationId
     );
     if (first.command || !first.loading) {
-      if (first.command) resolvedCommandCache[cacheKey] = first.command;
-      return Promise.resolve(first.command);
+      return Promise.resolve(
+        rememberResolvedCommand(cacheKey, first.command)
+      );
     }
 
     return delay(900).then(function () {
@@ -679,8 +720,7 @@
         applicationId
       );
       if (second.command || !second.loading) {
-        if (second.command) resolvedCommandCache[cacheKey] = second.command;
-        return second.command;
+        return rememberResolvedCommand(cacheKey, second.command);
       }
       return delay(900).then(function () {
         var third = findCommandOnce(
@@ -689,9 +729,34 @@
           commandType,
           applicationId
         ).command;
-        if (third) resolvedCommandCache[cacheKey] = third;
-        return third;
+        return rememberResolvedCommand(cacheKey, third);
       });
+    });
+  }
+
+  function findCommandAfterSpinnerPaint(
+    command,
+    channelId,
+    commandType,
+    applicationId
+  ) {
+    var cacheKey = resolvedCommandKey(
+      command,
+      commandType,
+      applicationId
+    );
+    if (resolvedCommandCache[cacheKey]) {
+      return Promise.resolve(resolvedCommandCache[cacheKey]);
+    }
+    return new Promise(function (resolve) {
+      afterSpinnerPaint(resolve);
+    }).then(function () {
+      return findCommand(
+        command,
+        channelId,
+        commandType,
+        applicationId
+      );
     });
   }
 
@@ -1946,6 +2011,37 @@
     storage.disabledChannels[channelId] = false;
   }
 
+  function scheduleCommandWarmup(channelId, proxy) {
+    var applicationId;
+    var cacheKey;
+    var warmupDelay;
+    if (!channelId || !proxy || !proxy.command) return;
+    applicationId = proxy.applicationId || null;
+    cacheKey = resolvedCommandKey(
+      proxy.command,
+      1,
+      applicationId
+    );
+    if (resolvedCommandCache[cacheKey] || commandWarmups[cacheKey]) {
+      return;
+    }
+    commandWarmups[cacheKey] = "scheduled";
+    warmupDelay = storage.commandHints[cacheKey] ? 40 : 250;
+    setTimeout(function () {
+      commandWarmups[cacheKey] = "loading";
+      findCommand(
+        proxy.command,
+        channelId,
+        1,
+        applicationId
+      ).then(function (command) {
+        commandWarmups[cacheKey] = command ? "ready" : null;
+      }).catch(function () {
+        commandWarmups[cacheKey] = null;
+      });
+    }, warmupDelay);
+  }
+
   function composerChannelId(props) {
     var selectedStore;
     var channelId;
@@ -2926,16 +3022,21 @@
         var props = args[0] || {};
         var channelId = composerChannelId(props);
         var ownsSelector;
+        var selectedProxy;
         var rendered;
         if (!channelId || !isWantedChannel(channelId)) {
           return original.apply(null, args);
+        }
+        selectedProxy = proxyForChannel(channelId);
+        if (selectedProxy) {
+          scheduleCommandWarmup(channelId, selectedProxy);
         }
         ownsSelector = composerOwnsSelector(targetName);
         props.shouldShowGiftButton = false;
         rendered = original.apply(null, args);
         if (
           targetName === "ChatInputRightActions" &&
-          proxyForChannel(channelId)
+          selectedProxy
         ) {
           rendered = metro.common.React.createElement(
             ComposerSendProgress,
@@ -3185,7 +3286,7 @@
       }
 
       finishSending = beginChannelSending(channelId);
-      operation = findCommand(
+      operation = findCommandAfterSpinnerPaint(
         selectedCommand,
         channelId,
         1,
@@ -4099,6 +4200,7 @@
     proxyIconCache = {};
     proxyIdentityCache = {};
     resolvedCommandCache = {};
+    commandWarmups = {};
     scannedApplications = [];
     applicationScanPromise = null;
     sendingChannels = {};
