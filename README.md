@@ -1,4 +1,4 @@
-# PluralAuto v7.6.4
+# PluralAuto v7.6.5
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -56,7 +56,7 @@ If PluralAuto says it cannot find a command, open that slash command from Discor
 
 Replies and attachments are enabled by default and can be switched off separately in settings. /plu/ral supports up to 10 attachments in one proxied message. PluralAuto handles Discord's cleared-draft `attachmentsToUpload` send path, including attachment-only messages. Stickers bypass PluralAuto and are sent normally.
 
-The moment Discord accepts a send-button press in a proxied DM, its arrow becomes a white loading spinner inside the normal blue circle. Discord's original send button is display-only inside a neutral PluralAuto touch target, so its native square pressed state cannot appear. The spinner uses local React state for the first tap and receives one painted frame before Discord's original send callback runs. The same loading state is then handed to the proxy operation and ends as soon as it succeeds or fails; there is no artificial minimum display time.
+PluralAuto leaves Discord's send button and send timing untouched. As soon as a proxied send begins, the working `ChatInputRightActions` layer covers Discord's pressed square with a blue circular loading wheel. Sending starts immediately; only the wheel's disappearance is held for one painted frame so very fast commands remain visible. Successfully resolved proxy and Reply commands are cached for the rest of the Discord session, avoiding repeated slash-command tree scans on later sends.
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
 
