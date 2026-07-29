@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 8.0.0 • Cleaner proxy replies with hidden command decorations and enlarged emoji-only replies.",
+  "description": "Version 8.0.1 • Stronger command-decoration suppression and enlarged emoji-only replies.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "bef73c47fb280db047249acea0ddca0c3fe41255c3aa3b4c8ed18ef2b9679b3d"
+  "hash": "0c1a3bd11f542a2110048a26f32b1d0aeb5e238ece37f20db52d6a3dc5474875"
 }
