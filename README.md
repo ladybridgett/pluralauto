@@ -1,4 +1,4 @@
-# PluralAuto v7.6.7
+# PluralAuto v8.0.0
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -10,10 +10,10 @@ It supports:
 - an instant-opening app-PFP character selector that replaces Discord's gift button in DMs;
 - staggered PFP loading after the first paint, so uncached icons never block the selector;
 - persistent PFP caching across Discord restarts;
-- a loading spinner on Discord's send button while a proxy command runs;
 - your signed-in Discord name and avatar on the Main account selector;
 - a one-message bypass;
 - automatic Discord replies through /plu/ral's `queue_for_reply` and `Reply` commands;
+- large `# ` formatting for emoji-only proxied replies;
 - Android notification quick replies through the proxy selected for that DM;
 - attachment-only and text-plus-attachment messages, with up to 10 files;
 - locally hidden “used command” decorations on your proxy responses;
@@ -29,7 +29,7 @@ It uses Discord's existing application-command executor. It does not use or requ
 In ShiggyCord, open **Settings → Plugins → +**, then paste the plugin folder URL:
 
 ```text
-https://raw.githubusercontent.com/ladybridgett/pluralauto/main/v7/
+https://raw.githubusercontent.com/ladybridgett/pluralauto/main/v8/
 ```
 
 Paste the folder URL, not the GitHub repository URL and not a direct link to `manifest.json` or `index.js`.
@@ -60,9 +60,11 @@ PluralAuto leaves Discord's send button completely untouched and does not show a
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
 
+If a proxied Discord reply contains only Unicode or custom Discord emojis, PluralAuto prefixes the outgoing proxy content with `# ` so it renders as a large heading. Ordinary messages and replies containing any non-emoji text are unchanged.
+
 Android's inline **Reply** action uses the same per-DM selection as the composer. PluralAuto reattaches its outgoing-message hook before Discord's Android direct-reply task runs, including when Discord's channel cache is still warming up.
 
-When one of your configured proxy apps answers, PluralAuto removes the interaction metadata from the local copy so Discord does not show the “used command” decoration on your side. It also sets Discord's local suppress-notifications flag and clears a delivered Android notification for that DM. Discord may still briefly create a system notification if Android receives the push while Discord and ShiggyCord are fully stopped; an external plugin cannot run before that native cold-start notification is created.
+When one of your configured proxy apps answers, PluralAuto removes legacy and current interaction-metadata fields from every available incoming-message path so Discord does not show the “used command” decoration on your side. It also tracks the proxy response expected from the command it just executed, sets Discord's local suppress-notifications flag, and clears a delivered Android notification for that DM. Discord may still briefly create a system notification if Android receives the push while Discord and ShiggyCord are fully stopped; an external plugin cannot run before that native cold-start notification is created.
 
 ## Privacy behavior
 
