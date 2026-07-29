@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "8.0.0";
+  var VERSION = "8.0.1";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -1076,9 +1076,12 @@
     if (!hasInteraction) return false;
     ids = proxyMessageIdentityIds(message);
     if (pending.applicationId) {
-      matches = ids.indexOf(pending.applicationId) !== -1;
+      matches =
+        ids.indexOf(pending.applicationId) !== -1 ||
+        Boolean(message.author && message.author.bot) ||
+        !message.author;
     } else {
-      matches = Boolean(message.author && message.author.bot);
+      matches = true;
     }
     if (!matches) return false;
     pending.remaining -= 1;
@@ -1086,11 +1089,56 @@
     return true;
   }
 
+  function interactionUserId(message) {
+    var interaction;
+    var metadata;
+    if (!message || typeof message !== "object") return "";
+    interaction = message.interaction || {};
+    metadata =
+      message.interaction_metadata ||
+      message.interactionMetadata ||
+      message.interaction_data ||
+      message.interactionData ||
+      {};
+    return String(
+      (metadata.user && metadata.user.id) ||
+      metadata.user_id ||
+      metadata.userId ||
+      (interaction.user && interaction.user.id) ||
+      interaction.user_id ||
+      interaction.userId ||
+      ""
+    );
+  }
+
+  function isOwnInteractionInProxyChannel(channelId, message) {
+    var user;
+    var userId;
+    if (!channelId || !proxyForChannel(String(channelId))) return false;
+    if (
+      !message ||
+      !(
+        message.interaction ||
+        message.interaction_metadata ||
+        message.interactionMetadata ||
+        message.interaction_data ||
+        message.interactionData
+      )
+    ) {
+      return false;
+    }
+    userId = interactionUserId(message);
+    if (!userId) return true;
+    user = currentUser();
+    return Boolean(user && String(user.id || "") === userId);
+  }
+
   function localProxyMessage(message, channelId) {
     var local;
     if (
       !isConfiguredProxyMessage(message) &&
-      !isExpectedProxyMessage(channelId, message)
+      !isExpectedProxyMessage(channelId, message) &&
+      !isOwnInteractionInProxyChannel(channelId, message)
     ) {
       return message;
     }
@@ -1107,6 +1155,49 @@
     delete local.interactionContext;
     local.flags = (Number(message.flags) || 0) | 4096;
     return local;
+  }
+
+  function incomingMessageIndex(args) {
+    var index;
+    var candidate;
+    for (index = 0; index < args.length; index += 1) {
+      candidate = args[index];
+      if (
+        candidate &&
+        typeof candidate === "object" &&
+        (
+          candidate.author ||
+          candidate.interaction ||
+          candidate.interaction_metadata ||
+          candidate.interactionMetadata ||
+          candidate.interaction_data ||
+          candidate.interactionData ||
+          candidate.channel_id ||
+          candidate.channelId
+        )
+      ) {
+        return index;
+      }
+    }
+    return args.length > 1 ? 1 : 0;
+  }
+
+  function incomingMessageChannelId(args, message, messageIndex) {
+    var index;
+    var value =
+      message &&
+      (message.channel_id || message.channelId);
+    if (value) return String(value);
+    for (index = 0; index < args.length; index += 1) {
+      if (
+        index !== messageIndex &&
+        (typeof args[index] === "string" ||
+          typeof args[index] === "number")
+      ) {
+        return String(args[index]);
+      }
+    }
+    return "";
   }
 
   function clearProxyNotifications(channelId) {
@@ -1131,24 +1222,32 @@
     var unpatches = [];
     var allTargets;
     var index;
-    function addTarget(target) {
-      if (
-        target &&
-        typeof target.receiveMessage === "function" &&
-        targets.indexOf(target) === -1
-      ) {
-        targets.push(target);
+    function addTarget(target, method) {
+      var targetIndex;
+      if (!target || typeof target[method] !== "function") return;
+      for (targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+        if (
+          targets[targetIndex].target === target &&
+          targets[targetIndex].method === method
+        ) {
+          return;
+        }
       }
+      targets.push({ target: target, method: method });
     }
     if (receiveMessageUnpatch) return true;
     try {
       resolveCore();
-      addTarget(receiveMessageActions);
+      addTarget(receiveMessageActions, "receiveMessage");
       try {
         if (typeof metro.findByPropsAll === "function") {
           allTargets = metro.findByPropsAll("receiveMessage") || [];
           for (index = 0; index < allTargets.length; index += 1) {
-            addTarget(allTargets[index]);
+            addTarget(allTargets[index], "receiveMessage");
+          }
+          allTargets = metro.findByPropsAll("updateMessage") || [];
+          for (index = 0; index < allTargets.length; index += 1) {
+            addTarget(allTargets[index], "updateMessage");
           }
         }
       } catch (ignored) {}
@@ -1160,17 +1259,23 @@
       }
       for (index = 0; index < targets.length; index += 1) {
         unpatches.push(vendetta.patcher.instead(
-          "receiveMessage",
-          targets[index],
+          targets[index].method,
+          targets[index].target,
           function (args, original) {
-            var message = args[1];
-            var local = localProxyMessage(message, args[0]);
+            var messageIndex = incomingMessageIndex(args);
+            var message = args[messageIndex];
+            var channelId = incomingMessageChannelId(
+              args,
+              message,
+              messageIndex
+            );
+            var local = localProxyMessage(message, channelId);
             var result;
-            if (local !== message) args[1] = local;
+            if (local !== message) args[messageIndex] = local;
             result = original.apply(null, args);
             if (local !== message) {
               setTimeout(function () {
-                clearProxyNotifications(args[0]);
+                clearProxyNotifications(channelId);
               }, 0);
             }
             return result;
@@ -1186,7 +1291,7 @@
       };
       storage.localProxyStatus =
         "Ready (" + targets.length +
-        " incoming-message path(s), decorations hidden locally).";
+        " incoming/update path(s), decorations hidden locally).";
       storage.proxyNotificationStatus =
         "Ready (configured proxy messages suppressed).";
       return true;
