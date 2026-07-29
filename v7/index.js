@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.4";
+  var VERSION = "7.6.5";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -35,6 +35,7 @@
   var simpleActionSheetModule = null;
   var proxyIconCache = {};
   var proxyIdentityCache = {};
+  var resolvedCommandCache = {};
   var scannedApplications = [];
   var applicationScanPromise = null;
 
@@ -650,13 +651,25 @@
   }
 
   function findCommand(command, channelId, commandType, applicationId) {
-    var first = findCommandOnce(
+    var cacheKey = [
+      String(channelId || ""),
+      normalise(command),
+      String(commandType == null ? "" : commandType),
+      String(applicationId || "")
+    ].join("|");
+    var cached = resolvedCommandCache[cacheKey];
+    var first;
+    if (cached) return Promise.resolve(cached);
+    first = findCommandOnce(
       command,
       channelId,
       commandType,
       applicationId
     );
-    if (first.command || !first.loading) return Promise.resolve(first.command);
+    if (first.command || !first.loading) {
+      if (first.command) resolvedCommandCache[cacheKey] = first.command;
+      return Promise.resolve(first.command);
+    }
 
     return delay(900).then(function () {
       var second = findCommandOnce(
@@ -665,14 +678,19 @@
         commandType,
         applicationId
       );
-      if (second.command || !second.loading) return second.command;
+      if (second.command || !second.loading) {
+        if (second.command) resolvedCommandCache[cacheKey] = second.command;
+        return second.command;
+      }
       return delay(900).then(function () {
-        return findCommandOnce(
+        var third = findCommandOnce(
           command,
           channelId,
           commandType,
           applicationId
         ).command;
+        if (third) resolvedCommandCache[cacheKey] = third;
+        return third;
       });
     });
   }
@@ -2525,17 +2543,26 @@
   function beginChannelSending(channelId) {
     var key = String(channelId || "");
     var finished = false;
-    sendingChannels[key] = Number(sendingChannels[key] || 0) + 1;
-    notifySendingListeners(key);
-    return function () {
-      if (finished) return;
-      finished = true;
+    function finishNow() {
       sendingChannels[key] = Math.max(
         0,
         Number(sendingChannels[key] || 0) - 1
       );
       if (!sendingChannels[key]) delete sendingChannels[key];
       notifySendingListeners(key);
+    }
+    sendingChannels[key] = Number(sendingChannels[key] || 0) + 1;
+    notifySendingListeners(key);
+    return function () {
+      if (finished) return;
+      finished = true;
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(finishNow);
+        });
+        return;
+      }
+      setTimeout(finishNow, 20);
     };
   }
 
@@ -2749,6 +2776,72 @@
     );
   }
 
+  function ComposerSendProgress(props) {
+    var React = metro.common.React;
+    var RN = metro.common.ReactNative;
+    var channelId = String(props.channelId || "");
+    var rerender = React.useState(0)[1];
+    var indicator;
+
+    React.useEffect(function () {
+      return subscribeToChannelSending(channelId, function () {
+        rerender(function (value) { return value + 1; });
+      });
+    }, [channelId]);
+
+    if (!isChannelSending(channelId)) return props.rendered;
+    indicator = RN.ActivityIndicator
+      ? React.createElement(RN.ActivityIndicator, {
+          size: "small",
+          color: "#ffffff"
+        })
+      : React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#ffffff",
+              fontSize: 22,
+              fontWeight: "700"
+            }
+          },
+          "…"
+        );
+    return React.createElement(
+      RN.View,
+      {
+        style: {
+          position: "relative",
+          flexDirection: "row",
+          alignItems: "center"
+        }
+      },
+      props.rendered,
+      React.createElement(
+        RN.View,
+        {
+          pointerEvents: "none",
+          accessibilityRole: "progressbar",
+          accessibilityLabel: "Sending proxied message",
+          style: {
+            position: "absolute",
+            right: 0,
+            top: 0,
+            zIndex: 999,
+            elevation: 999,
+            width: 44,
+            height: 44,
+            borderRadius: 22,
+            backgroundColor: "#5865f2",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden"
+          }
+        },
+        indicator
+      )
+    );
+  }
+
   function wrapComposerActions(rendered, channelId) {
     var React = metro.common.React;
     var RN = metro.common.ReactNative;
@@ -2840,6 +2933,18 @@
         ownsSelector = composerOwnsSelector(targetName);
         props.shouldShowGiftButton = false;
         rendered = original.apply(null, args);
+        if (
+          targetName === "ChatInputRightActions" &&
+          proxyForChannel(channelId)
+        ) {
+          rendered = metro.common.React.createElement(
+            ComposerSendProgress,
+            {
+              channelId: channelId,
+              rendered: rendered
+            }
+          );
+        }
         return ownsSelector
           ? wrapComposerActions(rendered, channelId)
           : rendered;
@@ -2871,18 +2976,9 @@
   }
 
   function attachSendButtonSpinner() {
-    var target;
     try {
-      if (sendButtonUnpatch) return true;
-      resolveCore();
-      target = findComposerTarget("ChatInputSendButton");
-      if (!target) {
-        storage.sendButtonStatus =
-          "Waiting for Discord's send button.";
-        return false;
-      }
-      sendButtonUnpatch = patchSendButtonTarget(target);
-      storage.sendButtonStatus = "Ready (ChatInputSendButton)";
+      storage.sendButtonStatus =
+        "Ready (ChatInputRightActions overlay)";
       return true;
     } catch (error) {
       storage.sendButtonStatus =
@@ -3088,9 +3184,7 @@
         return original.apply(null, args);
       }
 
-      finishSending =
-        claimPressedSending(channelId) ||
-        beginChannelSending(channelId);
+      finishSending = beginChannelSending(channelId);
       operation = findCommand(
         selectedCommand,
         channelId,
@@ -4004,6 +4098,7 @@
     simpleActionSheetModule = null;
     proxyIconCache = {};
     proxyIdentityCache = {};
+    resolvedCommandCache = {};
     scannedApplications = [];
     applicationScanPromise = null;
     sendingChannels = {};
