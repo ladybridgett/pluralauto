@@ -1,0 +1,14 @@
+{
+  "name": "PluralAuto",
+  "description": "Version 8.0.0 • Cleaner proxy replies with hidden command decorations and enlarged emoji-only replies.",
+  "authors": [
+    {
+      "name": "Brigitte"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ic_commands"
+  },
+  "hash": "bef73c47fb280db047249acea0ddca0c3fe41255c3aa3b4c8ed18ef2b9679b3d"
+}
