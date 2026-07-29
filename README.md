@@ -1,4 +1,4 @@
-# PluralAuto v7.6.5
+# PluralAuto v7.6.6
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -56,7 +56,7 @@ If PluralAuto says it cannot find a command, open that slash command from Discor
 
 Replies and attachments are enabled by default and can be switched off separately in settings. /plu/ral supports up to 10 attachments in one proxied message. PluralAuto handles Discord's cleared-draft `attachmentsToUpload` send path, including attachment-only messages. Stickers bypass PluralAuto and are sent normally.
 
-PluralAuto leaves Discord's send button and send timing untouched. As soon as a proxied send begins, the working `ChatInputRightActions` layer covers Discord's pressed square with a blue circular loading wheel. Sending starts immediately; only the wheel's disappearance is held for one painted frame so very fast commands remain visible. Successfully resolved proxy and Reply commands are cached for the rest of the Discord session, avoiding repeated slash-command tree scans on later sends.
+PluralAuto leaves Discord's send button untouched. As soon as a proxied send begins, the working `ChatInputRightActions` layer covers Discord's pressed square with a blue circular loading wheel. If a cold command lookup is needed, PluralAuto gives the wheel one painted frame before starting the synchronous Discord command scan, so Android no longer appears frozen while that scan runs. Resolved command objects are shared across every DM for the current Discord session. Their serializable command hints persist across Discord restarts and trigger background rehydration shortly after a configured DM opens, avoiding most cold scans at send time.
 
 Reply commands named either `Reply` or `Reply (member name)` are supported. Because each listed proxy stores its Discord application ID, PluralAuto can distinguish two character apps that use the same slash-command name. It also looks up the Reply command inside the selected userproxy application so similarly named commands are not mixed up.
 
