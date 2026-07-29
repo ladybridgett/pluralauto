@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.5 • Faster cached proxy sends and a composer-layer loading wheel.",
+  "description": "Version 7.6.6 • Immediate loading paint, persistent command hints, and DM prewarming.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "61a13eb796059e2c53913841b411e4ea150d39c28370ac7dbe55604e461484fe"
+  "hash": "944e844ebe7731a8b0d126d94fd5e236c17870bf5b6e8be9c7211ac8e824f3e1"
 }
