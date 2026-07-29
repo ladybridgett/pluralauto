@@ -1,4 +1,4 @@
-# PluralAuto v8.0.0
+# PluralAuto v8.0.1
 
 PluralAuto is a ShiggyCord/Vendetta-compatible mobile plugin that automatically runs a selected Plu/ral userproxy slash command when you send an ordinary message in a DM.
 
@@ -64,7 +64,7 @@ If a proxied Discord reply contains only Unicode or custom Discord emojis, Plura
 
 Android's inline **Reply** action uses the same per-DM selection as the composer. PluralAuto reattaches its outgoing-message hook before Discord's Android direct-reply task runs, including when Discord's channel cache is still warming up.
 
-When one of your configured proxy apps answers, PluralAuto removes legacy and current interaction-metadata fields from every available incoming-message path so Discord does not show the “used command” decoration on your side. It also tracks the proxy response expected from the command it just executed, sets Discord's local suppress-notifications flag, and clears a delivered Android notification for that DM. Discord may still briefly create a system notification if Android receives the push while Discord and ShiggyCord are fully stopped; an external plugin cannot run before that native cold-start notification is created.
+When one of your configured proxy apps answers, PluralAuto detects Discord's message argument dynamically and removes legacy and current interaction-metadata fields from both incoming-message and message-update paths so Discord does not show the “used command” decoration on your side. It also tracks the proxy response expected from the command it just executed, sets Discord's local suppress-notifications flag, and clears a delivered Android notification for that DM. Discord may still briefly create a system notification if Android receives the push while Discord and ShiggyCord are fully stopped; an external plugin cannot run before that native cold-start notification is created.
 
 ## Privacy behavior
 
