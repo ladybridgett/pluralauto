@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.3 • Instant send-button spinner without the pressed-square delay.",
+  "description": "Version 7.6.4 • Neutral send touch target with a guaranteed first-frame spinner.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "fc6b10ca304fcd68f09646e300836a8e5a7aa75dffa5bfe3481bf5c0cb42751c"
+  "hash": "89ef6887a7939855fcd865f8a4282340c0b5c825c0be6aaa2c4c9d3ed67a6c3d"
 }
