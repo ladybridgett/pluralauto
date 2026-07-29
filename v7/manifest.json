@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 7.6.6 • Immediate loading paint, persistent command hints, and DM prewarming.",
+  "description": "Version 7.6.7 • Cross-DM command cache and prewarming, with the loading wheel removed.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "944e844ebe7731a8b0d126d94fd5e236c17870bf5b6e8be9c7211ac8e824f3e1"
+  "hash": "934dad4c00e503a2b4c69a2b5a77bddd5c6ab5f71098edadbf22a4a08927c911"
 }
