@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "7.6.6";
+  var VERSION = "7.6.7";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -3034,18 +3034,6 @@
         ownsSelector = composerOwnsSelector(targetName);
         props.shouldShowGiftButton = false;
         rendered = original.apply(null, args);
-        if (
-          targetName === "ChatInputRightActions" &&
-          selectedProxy
-        ) {
-          rendered = metro.common.React.createElement(
-            ComposerSendProgress,
-            {
-              channelId: channelId,
-              rendered: rendered
-            }
-          );
-        }
         return ownsSelector
           ? wrapComposerActions(rendered, channelId)
           : rendered;
@@ -3079,7 +3067,7 @@
   function attachSendButtonSpinner() {
     try {
       storage.sendButtonStatus =
-        "Ready (ChatInputRightActions overlay)";
+        "Disabled (loading wheel removed)";
       return true;
     } catch (error) {
       storage.sendButtonStatus =
@@ -3256,7 +3244,6 @@
     var queuedForReply = false;
     var content;
     var applicationId;
-    var finishSending = null;
     var operation;
 
     try {
@@ -3285,8 +3272,7 @@
         return original.apply(null, args);
       }
 
-      finishSending = beginChannelSending(channelId);
-      operation = findCommandAfterSpinnerPaint(
+      operation = findCommand(
         selectedCommand,
         channelId,
         1,
@@ -3362,18 +3348,8 @@
           }
           return handleProxyError(error, args, original);
         });
-      return Promise.resolve(operation).then(
-        function (result) {
-          finishSending();
-          return result;
-        },
-        function (error) {
-          finishSending();
-          throw error;
-        }
-      );
+      return operation;
     } catch (error) {
-      if (finishSending) finishSending();
       return handleProxyError(error, args, original);
     }
   }
