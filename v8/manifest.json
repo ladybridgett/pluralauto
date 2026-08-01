@@ -1,6 +1,6 @@
 {
   "name": "PluralAuto",
-  "description": "Version 8.0.1 • Stronger command-decoration suppression and enlarged emoji-only replies.",
+  "description": "Version 8.0.2 • Alters render locally without APP or command-decoration labels.",
   "authors": [
     {
       "name": "Brigitte"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_commands"
   },
-  "hash": "0c1a3bd11f542a2110048a26f32b1d0aeb5e238ece37f20db52d6a3dc5474875"
+  "hash": "3783d4355606bd7c9d1120645068d5ef384561cabde0972dcc14e4aa74e53da8"
 }
