@@ -1,7 +1,7 @@
 (function (plugin, vendetta) {
   "use strict";
 
-  var VERSION = "8.0.1";
+  var VERSION = "8.0.2";
   var storage = {};
   var metro = null;
   var messageActions = null;
@@ -1135,6 +1135,7 @@
 
   function localProxyMessage(message, channelId) {
     var local;
+    var localAuthor;
     if (
       !isConfiguredProxyMessage(message) &&
       !isExpectedProxyMessage(channelId, message) &&
@@ -1146,6 +1147,18 @@
     Object.keys(message).forEach(function (key) {
       local[key] = message[key];
     });
+    if (message.author && typeof message.author === "object") {
+      localAuthor = {};
+      Object.keys(message.author).forEach(function (key) {
+        localAuthor[key] = message.author[key];
+      });
+      localAuthor.bot = false;
+      local.author = localAuthor;
+    }
+    delete local.webhook_id;
+    delete local.webhookId;
+    delete local.application_id;
+    delete local.applicationId;
     delete local.interaction;
     delete local.interaction_metadata;
     delete local.interactionMetadata;
